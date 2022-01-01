@@ -64,12 +64,6 @@ fn ParseInternalErrorImpl(comptime T: type, comptime inferred_types: []const typ
 const logger = std.log.scoped(.json);
 fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: bool, value: std.json.Value, options: ParseOptions) ParseInternalError(T)!T {
     if (T == std.json.Value) return value;
-    if (T == std.json.ObjectMap) {
-        if (value == .Object) return value.Object else {
-            if (!ignore) logger.debug("expected ObjectMap at {s}", .{name});
-            return error.UnexpectedFieldType;
-        }
-    }
 
     switch (@typeInfo(T)) {
         .Bool => {
@@ -144,6 +138,29 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
             }
         },
         .Struct => |info| {
+            if (@hasDecl(T, "KV")) {
+                const Key = std.meta.fields(T.KV)[0].field_type;
+                const Value = std.meta.fields(T.KV)[1].field_type;
+
+                if (Key != []const u8) @compileError("ArrayHashMap key must be of type []const u8!");
+
+                if (value == .Object) {
+                    if (Value == std.json.Value) return value.Object;
+
+                    var map = T.init(options.allocator orelse return error.AllocatorRequired);
+                    var map_iterator = value.Object.iterator();
+
+                    while (map_iterator.next()) |entry| {
+                        try map.put(entry.key_ptr.*, try parseInternal(Value, name ++ ".entry", ignore, entry.value_ptr.*, options));
+                    }
+
+                    return map;
+                } else {
+                    if (!ignore) logger.debug("expected {s} at {s}", .{ @typeName(T), name });
+                    return error.UnexpectedFieldType;
+                }
+            }
+
             if (value == .Object) {
                 var result: T = undefined;
 
@@ -236,6 +253,8 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
 }
 
 test "json.parse simple struct" {
+    @setEvalBranchQuota(10_000);
+
     const Role = enum(i64) { crewmate, impostor, ghost };
 
     const Union = union(enum) {
@@ -251,6 +270,11 @@ test "json.parse simple struct" {
         union_b: Union,
     };
 
+    const Player = struct {
+        name: []const u8,
+        based: bool,
+    };
+
     const Struct = struct {
         bool_true: bool,
         bool_false: bool,
@@ -261,6 +285,10 @@ test "json.parse simple struct" {
         an_enum_string: Role,
         slice: []i64,
         substruct: Substruct,
+
+        random_map: std.json.ObjectMap,
+        number_map: std.StringArrayHashMap(i64),
+        players: std.StringArrayHashMap(Player),
     };
 
     const json =
@@ -274,10 +302,22 @@ test "json.parse simple struct" {
         \\    "an_enum_string": "crewmate",
         \\    "slice": [1, 2, 3, 4, 5, 6],
         \\    "substruct": {
-        \\         "value": "hello",
-        \\         "slice_of_values": ["hello", "world"],
-        \\         "union_a": -42,
-        \\         "union_b": "hello"
+        \\        "value": "hello",
+        \\        "slice_of_values": ["hello", "world"],
+        \\        "union_a": -42,
+        \\        "union_b": "hello"
+        \\    },
+        \\    "random_map": {
+        \\        "a": 123,
+        \\        "b": "Amogus!!"
+        \\    },
+        \\    "number_map": {
+        \\        "a": 123,
+        \\        "b": 456
+        \\    },
+        \\    "players": {
+        \\        "aurame": {"name": "Auguste", "based": true},
+        \\        "mattnite": {"name": "Matt", "based": true}
         \\    }
         \\}
     ;
@@ -311,6 +351,17 @@ test "json.parse simple struct" {
     try std.testing.expectEqual(@as(i64, -42), parsed.substruct.union_a.a);
     try std.testing.expect(parsed.substruct.union_b == .b);
     try std.testing.expectEqualStrings("hello", parsed.substruct.union_b.b);
+
+    try std.testing.expectEqual(@as(i64, 123), parsed.random_map.get("a").?.Integer);
+    try std.testing.expectEqualStrings("Amogus!!", parsed.random_map.get("b").?.String);
+
+    try std.testing.expectEqual(@as(i64, 123), parsed.number_map.get("a").?);
+    try std.testing.expectEqual(@as(i64, 456), parsed.number_map.get("b").?);
+
+    try std.testing.expectEqualStrings("Auguste", parsed.players.get("aurame").?.name);
+    try std.testing.expectEqualStrings("Matt", parsed.players.get("mattnite").?.name);
+    try std.testing.expectEqual(true, parsed.players.get("aurame").?.based);
+    try std.testing.expectEqual(true, parsed.players.get("mattnite").?.based);
 }
 
 test "json.parse missing field" {
