@@ -161,6 +161,27 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
                 }
             }
 
+            if (info.is_tuple) {
+                if (value != .Array) {
+                    if (!ignore) logger.debug("expected Array, found {s} at {s}", .{ @tagName(value), name });
+                    return error.UnexpectedFieldType;
+                }
+
+                if (value.Array.items.len != std.meta.fields(T).len) {
+                    if (!ignore) logger.debug("expected Array to match length of Tuple {s} but it doesn't; at {s}", .{ @typeName(T), name });
+                    return error.UnexpectedFieldType;
+                }
+
+                var tuple: T = undefined;
+                comptime var index: usize = 0;
+
+                inline while (index < std.meta.fields(T).len) : (index += 1) {
+                    tuple[index] = try parseInternal(std.meta.fields(T)[index].field_type, name ++ "." ++ std.fmt.comptimePrint("{d}", .{index}), ignore, value.Array.items[index], options);
+                }
+
+                return tuple;
+            }
+
             if (value == .Object) {
                 var result: T = undefined;
 
@@ -275,6 +296,8 @@ test "json.parse simple struct" {
         based: bool,
     };
 
+    const MyTuple = std.meta.Tuple(&[_]type{ i64, bool });
+
     const Struct = struct {
         bool_true: bool,
         bool_false: bool,
@@ -289,6 +312,9 @@ test "json.parse simple struct" {
         random_map: std.json.ObjectMap,
         number_map: std.StringArrayHashMap(i64),
         players: std.StringArrayHashMap(Player),
+
+        my_tuple: MyTuple,
+        // my_array: [2]u8,
     };
 
     const json =
@@ -318,7 +344,8 @@ test "json.parse simple struct" {
         \\    "players": {
         \\        "aurame": {"name": "Auguste", "based": true},
         \\        "mattnite": {"name": "Matt", "based": true}
-        \\    }
+        \\    },
+        \\    "my_tuple": [10, false]
         \\}
     ;
 
@@ -362,6 +389,8 @@ test "json.parse simple struct" {
     try std.testing.expectEqualStrings("Matt", parsed.players.get("mattnite").?.name);
     try std.testing.expectEqual(true, parsed.players.get("aurame").?.based);
     try std.testing.expectEqual(true, parsed.players.get("mattnite").?.based);
+
+    try std.testing.expectEqual(MyTuple{ 10, false }, parsed.my_tuple);
 }
 
 test "json.parse missing field" {
