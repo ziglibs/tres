@@ -1,12 +1,13 @@
 const std = @import("std");
 
 pub const ParseOptions = struct {
+    suppress_error_logs: bool = true,
     /// Allocator, needed for non-u8/std.json.Value arrays
     allocator: ?std.mem.Allocator = null,
 };
 
 pub fn parse(comptime T: type, tree: std.json.Value, options: ParseOptions) ParseInternalError(T)!T {
-    return try parseInternal(T, "root", false, tree, options);
+    return try parseInternal(T, "root", tree, options);
 }
 
 pub fn Undefinedable(comptime T: type) type {
@@ -62,7 +63,7 @@ fn ParseInternalErrorImpl(comptime T: type, comptime inferred_types: []const typ
 }
 
 const logger = std.log.scoped(.json);
-fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: bool, value: std.json.Value, options: ParseOptions) ParseInternalError(T)!T {
+fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Value, options: ParseOptions) ParseInternalError(T)!T {
     if (T == std.json.Value) return value;
 
     switch (@typeInfo(T)) {
@@ -70,7 +71,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
             if (value == .Bool) {
                 return value.Bool;
             } else {
-                if (!ignore) logger.debug("expected Bool, found {s} at {s}", .{ @tagName(value), name });
+                if (!options.suppress_error_logs) logger.err("expected Bool, found {s} at {s}", .{ @tagName(value), name });
 
                 return error.UnexpectedFieldType;
             }
@@ -79,7 +80,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
             if (value == .Float) {
                 return @floatCast(T, value.Float);
             } else {
-                if (!ignore) logger.debug("expected Float, found {s} at {s}", .{ @tagName(value), name });
+                if (!options.suppress_error_logs) logger.err("expected Float, found {s} at {s}", .{ @tagName(value), name });
 
                 return error.UnexpectedFieldType;
             }
@@ -88,7 +89,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
             if (value == .Integer) {
                 return try std.math.cast(T, value.Integer);
             } else {
-                if (!ignore) logger.debug("expected Integer, found {s} at {s}", .{ @tagName(value), name });
+                if (!options.suppress_error_logs) logger.err("expected Integer, found {s} at {s}", .{ @tagName(value), name });
 
                 return error.UnexpectedFieldType;
             }
@@ -97,14 +98,14 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
             if (value == .Null) {
                 return null;
             } else {
-                return try parseInternal(info.child, name ++ ".?", ignore, value, options);
+                return try parseInternal(info.child, name ++ ".?", value, options);
             }
         },
         .Enum => {
             if (value == .Integer) {
                 // we use this to convert signed to unsigned and check if it actually fits.
                 const tag = std.math.cast(std.meta.Tag(T), value.Integer) catch {
-                    if (!ignore) logger.debug("invalid enum tag for {s}, found {d} at {s}", .{ @typeName(T), value.Integer, name });
+                    if (!options.suppress_error_logs) logger.err("invalid enum tag for {s}, found {d} at {s}", .{ @typeName(T), value.Integer, name });
 
                     return error.InvalidEnumTag;
                 };
@@ -112,12 +113,12 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
                 return try std.meta.intToEnum(T, tag);
             } else if (value == .String) {
                 return std.meta.stringToEnum(T, value.String) orelse {
-                    if (!ignore) logger.debug("invalid enum tag for {s}, found '{s}' at {s}", .{ @typeName(T), value.String, name });
+                    if (!options.suppress_error_logs) logger.err("invalid enum tag for {s}, found '{s}' at {s}", .{ @typeName(T), value.String, name });
 
                     return error.InvalidEnumTag;
                 };
             } else {
-                if (!ignore) logger.debug("expected Integer or String, found {s} at {s}", .{ @tagName(value), name });
+                if (!options.suppress_error_logs) logger.err("expected Integer or String, found {s} at {s}", .{ @tagName(value), name });
 
                 return error.UnexpectedFieldType;
             }
@@ -125,12 +126,12 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
         .Union => |info| {
             if (info.tag_type != null) {
                 inline for (info.fields) |field| {
-                    if (parseInternal(field.field_type, name ++ "." ++ field.name, true, value, options)) |parsed_value| {
+                    if (parseInternal(field.field_type, name ++ "." ++ field.name, value, options)) |parsed_value| {
                         return @unionInit(T, field.name, parsed_value);
                     } else |_| {}
                 }
 
-                if (!ignore) logger.debug("union fell through for {s}, found {s} at {s}", .{ @typeName(T), @tagName(value), name });
+                if (!options.suppress_error_logs) logger.err("union fell through for {s}, found {s} at {s}", .{ @typeName(T), @tagName(value), name });
 
                 return error.UnexpectedFieldType;
             } else {
@@ -151,24 +152,24 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
                     var map_iterator = value.Object.iterator();
 
                     while (map_iterator.next()) |entry| {
-                        try map.put(entry.key_ptr.*, try parseInternal(Value, name ++ ".entry", ignore, entry.value_ptr.*, options));
+                        try map.put(entry.key_ptr.*, try parseInternal(Value, name ++ ".entry", entry.value_ptr.*, options));
                     }
 
                     return map;
                 } else {
-                    if (!ignore) logger.debug("expected {s} at {s}", .{ @typeName(T), name });
+                    if (!options.suppress_error_logs) logger.err("expected {s} at {s}", .{ @typeName(T), name });
                     return error.UnexpectedFieldType;
                 }
             }
 
             if (info.is_tuple) {
                 if (value != .Array) {
-                    if (!ignore) logger.debug("expected Array, found {s} at {s}", .{ @tagName(value), name });
+                    if (!options.suppress_error_logs) logger.err("expected Array, found {s} at {s}", .{ @tagName(value), name });
                     return error.UnexpectedFieldType;
                 }
 
                 if (value.Array.items.len != std.meta.fields(T).len) {
-                    if (!ignore) logger.debug("expected Array to match length of Tuple {s} but it doesn't; at {s}", .{ @typeName(T), name });
+                    if (!options.suppress_error_logs) logger.err("expected Array to match length of Tuple {s} but it doesn't; at {s}", .{ @typeName(T), name });
                     return error.UnexpectedFieldType;
                 }
 
@@ -176,7 +177,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
                 comptime var index: usize = 0;
 
                 inline while (index < std.meta.fields(T).len) : (index += 1) {
-                    tuple[index] = try parseInternal(std.meta.fields(T)[index].field_type, name ++ "." ++ std.fmt.comptimePrint("{d}", .{index}), ignore, value.Array.items[index], options);
+                    tuple[index] = try parseInternal(std.meta.fields(T)[index].field_type, name ++ "." ++ std.fmt.comptimePrint("{d}", .{index}), value.Array.items[index], options);
                 }
 
                 return tuple;
@@ -193,24 +194,24 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
 
                     if (field.is_comptime) {
                         if (field_value == null) {
-                            if (!ignore) logger.debug("comptime field {s}.{s} missing, at {s}", .{ @typeName(T), field.name, name });
+                            if (!options.suppress_error_logs) logger.err("comptime field {s}.{s} missing, at {s}", .{ @typeName(T), field.name, name });
 
                             return error.InvalidFieldValue;
                         }
 
-                        const parsed_value = try parseInternal(field.field_type, name ++ "." ++ field.name, ignore, field_value.?, options);
+                        const parsed_value = try parseInternal(field.field_type, name ++ "." ++ field.name, field_value.?, options);
                         // NOTE: This only works for strings!
-                        if (std.mem.eql(u8, parsed_value, field.default_value.?)) {
-                            if (!ignore) logger.debug("comptime field {s}.{s} does not match, found {s} at {s}", .{ @typeName(T), field.name, @tagName(field_value.?), name });
+                        if (!std.mem.eql(u8, parsed_value, field.default_value.?)) {
+                            if (!options.suppress_error_logs) logger.err("comptime field {s}.{s} does not match", .{ @typeName(T), field.name });
 
                             return error.InvalidFieldValue;
                         }
                     } else {
                         if (field_value) |fv| {
                             if (@typeInfo(field.field_type) == .Struct and @hasDecl(field.field_type, "__json_is_undefinedable"))
-                                @field(result, field.name) = .{ .value = try parseInternal(field.field_type.__json_T, name ++ "." ++ field.name, ignore, fv, options), .missing = false }
+                                @field(result, field.name) = .{ .value = try parseInternal(field.field_type.__json_T, name ++ "." ++ field.name, fv, options), .missing = false }
                             else
-                                @field(result, field.name) = try parseInternal(field.field_type, name ++ "." ++ field.name, ignore, fv, options);
+                                @field(result, field.name) = try parseInternal(field.field_type, name ++ "." ++ field.name, fv, options);
                         } else {
                             if (@typeInfo(field.field_type) == .Struct and @hasDecl(field.field_type, "__json_is_undefinedable")) {
                                 @field(result, field.name) = .{
@@ -220,7 +221,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
                             } else if (field.default_value) |default| {
                                 @field(result, field.name) = default;
                             } else {
-                                if (!ignore) logger.debug("required field {s}.{s} missing, at {s}", .{ @typeName(T), field.name, name });
+                                if (!options.suppress_error_logs) logger.err("required field {s}.{s} missing, at {s}", .{ @typeName(T), field.name, name });
 
                                 missing_field = true;
                             }
@@ -232,7 +233,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
 
                 return result;
             } else {
-                if (!ignore) logger.debug("expected Object, found {s} at {s}", .{ @tagName(value), name });
+                if (!options.suppress_error_logs) logger.err("expected Object, found {s} at {s}", .{ @tagName(value), name });
 
                 return error.UnexpectedFieldType;
             }
@@ -244,7 +245,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
                         if (value == .String) {
                             return value.String;
                         } else {
-                            if (!ignore) logger.debug("expected String, found {s} at {s}", .{ @tagName(value), name });
+                            if (!options.suppress_error_logs) logger.err("expected String, found {s} at {s}", .{ @tagName(value), name });
 
                             return error.UnexpectedFieldType;
                         }
@@ -254,11 +255,11 @@ fn parseInternal(comptime T: type, comptime name: []const u8, comptime ignore: b
 
                             var array = try (options.allocator orelse return error.AllocatorRequired).alloc(info.child, value.Array.items.len);
                             for (value.Array.items) |item, index|
-                                array[index] = try parseInternal(info.child, name ++ "[...]", ignore, item, options);
+                                array[index] = try parseInternal(info.child, name ++ "[...]", item, options);
 
                             return array;
                         } else {
-                            if (!ignore) logger.debug("expected Array, found {s} at {s}", .{ @tagName(value), name });
+                            if (!options.suppress_error_logs) logger.err("expected Array, found {s} at {s}", .{ @tagName(value), name });
 
                             return error.UnexpectedFieldType;
                         }
@@ -437,4 +438,52 @@ test "json.parse undefinedable fields and default values" {
     try std.testing.expectEqual(@as(i64, 42069), parsed.meh.value);
     try std.testing.expectEqual(true, parsed.meh2.missing);
     try std.testing.expectEqual(@as(u8, 123), parsed.default);
+}
+
+test "json.parse comptime fields" {
+    const YoureTheImpostorMessage = struct {
+        comptime method: []const u8 = "ship/impostor",
+        sussiness: f64,
+    };
+
+    const YoureCuteUwUMessage = struct {
+        comptime method: []const u8 = "a/cutiepie",
+        cuteness: i64,
+    };
+
+    const Message = union(enum) {
+        youre_the_impostor: YoureTheImpostorMessage,
+        youre_cute_uwu: YoureCuteUwUMessage,
+    };
+
+    const first_message =
+        \\{
+        \\    "method": "ship/impostor",
+        \\    "sussiness": 69.420
+        \\}
+    ;
+
+    const second_message =
+        \\{
+        \\    "method": "a/cutiepie",
+        \\    "cuteness": 100
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+
+    const first_tree = try testing_parser.parse(first_message);
+    const first_parsed = try parse(Message, first_tree.root, .{ .allocator = arena.allocator() });
+
+    try std.testing.expect(first_parsed == .youre_the_impostor);
+
+    testing_parser.reset();
+
+    const second_tree = try testing_parser.parse(second_message);
+    const second_parsed = try parse(Message, second_tree.root, .{ .allocator = arena.allocator(), .suppress_error_logs = false });
+
+    try std.testing.expect(second_parsed == .youre_cute_uwu);
 }
