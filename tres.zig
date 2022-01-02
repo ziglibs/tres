@@ -35,7 +35,7 @@ fn ParseInternalErrorImpl(comptime T: type, comptime inferred_types: []const typ
         .Bool, .Float => return error{UnexpectedFieldType},
         .Pointer => |info| switch (info.child) {
             u8, std.json.Value => return error{UnexpectedFieldType},
-            else => return error{ UnexpectedFieldType, OutOfMemory, AllocatorRequired } || ParseInternalErrorImpl(info.child, inferred_types ++ [_]type{T}),
+            else => return error{ UnexpectedFieldType, OutOfMemory } || (if (info.child != std.json.Value) error{AllocatorRequired} else error{}) || ParseInternalErrorImpl(info.child, inferred_types ++ [_]type{T}),
         },
         .Optional => |info| return ParseInternalErrorImpl(info.child, inferred_types ++ [_]type{T}),
         .Enum => return error{ InvalidEnumTag, UnexpectedFieldType },
@@ -53,6 +53,7 @@ fn ParseInternalErrorImpl(comptime T: type, comptime inferred_types: []const typ
                 InvalidFieldValue,
                 MissingRequiredField,
             };
+            if (@hasDecl(T, "KV") and std.meta.fields(T.KV)[1].field_type != std.json.Value) errors = errors || error{AllocatorRequired};
             for (info.fields) |field| {
                 errors = errors || ParseInternalErrorImpl(field.field_type, inferred_types ++ [_]type{T});
             }
@@ -157,7 +158,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
 
                     return map;
                 } else {
-                    if (!options.suppress_error_logs) logger.err("expected {s} at {s}", .{ @typeName(T), name });
+                    if (!options.suppress_error_logs) logger.err("expected map of {s} at {s}, found {s}", .{ @typeName(Value), name, @tagName(value) });
                     return error.UnexpectedFieldType;
                 }
             }
@@ -483,7 +484,20 @@ test "json.parse comptime fields" {
     testing_parser.reset();
 
     const second_tree = try testing_parser.parse(second_message);
-    const second_parsed = try parse(Message, second_tree.root, .{ .allocator = arena.allocator(), .suppress_error_logs = false });
+    const second_parsed = try parse(Message, second_tree.root, .{ .allocator = arena.allocator() });
 
     try std.testing.expect(second_parsed == .youre_cute_uwu);
+}
+
+test "json.parse allocator required errors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+
+    try std.testing.expectError(error.AllocatorRequired, parse([]i64, (try testing_parser.parse("[1, 2, 3, 4]")).root, .{}));
+    testing_parser.reset();
+    try std.testing.expectError(error.AllocatorRequired, parse(std.StringArrayHashMap(i64), (try testing_parser.parse(
+        \\{"a": 123, "b": -69}
+    )).root, .{}));
 }
