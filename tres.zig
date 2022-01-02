@@ -66,6 +66,9 @@ fn ParseInternalErrorImpl(comptime T: type, comptime inferred_types: []const typ
 const logger = std.log.scoped(.json);
 fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Value, options: ParseOptions) ParseInternalError(T)!T {
     if (T == std.json.Value) return value;
+    if ((@typeInfo(T) == .Struct or @typeInfo(T) == .Enum or @typeInfo(T) == .Union) and @hasDecl(T, "tresParse")) {
+        return T.tresParse(value, options);
+    }
 
     switch (@typeInfo(T)) {
         .Bool => {
@@ -487,6 +490,90 @@ test "json.parse comptime fields" {
     const second_parsed = try parse(Message, second_tree.root, .{ .allocator = arena.allocator() });
 
     try std.testing.expect(second_parsed == .youre_cute_uwu);
+}
+
+test "json.parse custom check functions for unions" {
+    // jsonrpc request
+    const RequestId = union(enum) { string: []const u8, integer: i64 };
+
+    const AmogusRequest = struct {
+        const method = "spaceship/amogus";
+
+        sussy: bool,
+    };
+
+    const MinecraftNotification = struct {
+        const method = "game/minecraft";
+
+        crafted: i64,
+        mined: i64,
+    };
+
+    const RequestParams = union(enum) {
+        amogus: AmogusRequest,
+        minecraft: MinecraftNotification,
+    };
+
+    const RequestOrNotification = struct {
+        const Self = @This();
+
+        jsonrpc: []const u8,
+        id: ?RequestId = null,
+        method: []const u8,
+        params: RequestParams,
+
+        fn RequestOrNotificationParseError() type {
+            var err = ParseInternalError(RequestId);
+            inline for (std.meta.fields(RequestParams)) |field| {
+                err = err || ParseInternalError(field.field_type);
+            }
+            return err;
+        }
+
+        pub fn tresParse(value: std.json.Value, options: ParseOptions) RequestOrNotificationParseError()!Self {
+            // var allocator = options.allocator orelse return error.AllocatorRequired;
+            var object = value.Object;
+            var request_or_notif: Self = undefined;
+
+            request_or_notif.jsonrpc = object.get("jsonrpc").?.String;
+            request_or_notif.id = if (object.get("id")) |id| try parse(RequestId, id, options) else null;
+            request_or_notif.method = object.get("method").?.String;
+
+            inline for (std.meta.fields(RequestParams)) |field| {
+                if (std.mem.eql(u8, request_or_notif.method, field.field_type.method)) {
+                    request_or_notif.params = @unionInit(RequestParams, field.name, try parse(field.field_type, object.get("params").?, options));
+                }
+            }
+
+            return request_or_notif;
+        }
+    };
+
+    const first_message =
+        \\{
+        \\    "jsonrpc": "2.0",
+        \\    "id": 10,
+        \\    "method": "spaceship/amogus",
+        \\    "params": {"sussy": true}
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    const first_tree = try testing_parser.parse(first_message);
+    const first_parsed = try parse(RequestOrNotification, first_tree.root, .{ .allocator = arena.allocator() });
+
+    try std.testing.expectEqualStrings("2.0", first_parsed.jsonrpc);
+    try std.testing.expect(first_parsed.id != null);
+    try std.testing.expect(first_parsed.id.? == .integer);
+    try std.testing.expectEqual(@as(i64, 10), first_parsed.id.?.integer);
+    try std.testing.expectEqualStrings("spaceship/amogus", first_parsed.method);
+    try std.testing.expect(first_parsed.params == .amogus);
+    try std.testing.expectEqual(true, first_parsed.params.amogus.sussy);
+
+    // TODO: Add second test
 }
 
 test "json.parse allocator required errors" {
