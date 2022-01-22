@@ -21,6 +21,15 @@ pub fn Undefinedable(comptime T: type) type {
 }
 
 pub fn ParseInternalError(comptime T: type) type {
+    if ((@typeInfo(T) == .Struct or @typeInfo(T) == .Enum or @typeInfo(T) == .Union) and @hasDecl(T, "tresParse")) {
+        const tresParse_return = @typeInfo(@typeInfo(@TypeOf(T.tresParse)).Fn.return_type.?);
+        if (tresParse_return == .ErrorUnion) {
+            return tresParse_return.ErrorUnion.error_set;
+        } else {
+            return error{};
+        }
+    }
+
     // `inferred_types` is used to avoid infinite recursion for recursive type definitions.
     const inferred_types = [_]type{};
     return ParseInternalErrorImpl(T, &inferred_types);
