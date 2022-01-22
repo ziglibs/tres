@@ -139,7 +139,10 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
         .Union => |info| {
             if (info.tag_type != null) {
                 inline for (info.fields) |field| {
-                    if (parseInternal(field.field_type, name ++ "." ++ field.name, value, options)) |parsed_value| {
+                    var union_options = options;
+                    union_options.suppress_error_logs = true;
+
+                    if (parseInternal(field.field_type, name ++ "." ++ field.name, value, union_options)) |parsed_value| {
                         return @unionInit(T, field.name, parsed_value);
                     } else |_| {}
                 }
