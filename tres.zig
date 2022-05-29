@@ -7,7 +7,7 @@ pub const ParseOptions = struct {
 };
 
 pub fn parse(comptime T: type, tree: std.json.Value, options: ParseOptions) ParseInternalError(T)!T {
-    return try parseInternal(T, "root", tree, options);
+    return try parseInternal(T, "root", @typeName(T), tree, options);
 }
 
 pub fn Undefinedable(comptime T: type) type {
@@ -73,7 +73,9 @@ fn ParseInternalErrorImpl(comptime T: type, comptime inferred_types: []const typ
 }
 
 const logger = std.log.scoped(.json);
-fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Value, options: ParseOptions) ParseInternalError(T)!T {
+fn parseInternal(comptime T: type, comptime parent_name: []const u8, comptime field_name: []const u8, value: std.json.Value, options: ParseOptions) ParseInternalError(T)!T {
+    const name = parent_name ++ "." ++ field_name;
+
     if (T == std.json.Value) return value;
     if ((@typeInfo(T) == .Struct or @typeInfo(T) == .Enum or @typeInfo(T) == .Union) and @hasDecl(T, "tresParse")) {
         return T.tresParse(value, options);
@@ -111,7 +113,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
             if (value == .Null) {
                 return null;
             } else {
-                return try parseInternal(info.child, name ++ ".?", value, options);
+                return try parseInternal(info.child, name, "?", value, options);
             }
         },
         .Enum => {
@@ -142,7 +144,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
                     var union_options = options;
                     union_options.suppress_error_logs = true;
 
-                    if (parseInternal(field.field_type, name ++ "." ++ field.name, value, union_options)) |parsed_value| {
+                    if (parseInternal(field.field_type, @typeName(T), field.name, value, union_options)) |parsed_value| {
                         return @unionInit(T, field.name, parsed_value);
                     } else |_| {}
                 }
@@ -168,7 +170,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
                     var map_iterator = value.Object.iterator();
 
                     while (map_iterator.next()) |entry| {
-                        try map.put(entry.key_ptr.*, try parseInternal(Value, name ++ ".entry", entry.value_ptr.*, options));
+                        try map.put(entry.key_ptr.*, try parseInternal(Value, @typeName(T), ".entry", entry.value_ptr.*, options));
                     }
 
                     return map;
@@ -193,7 +195,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
                 comptime var index: usize = 0;
 
                 inline while (index < std.meta.fields(T).len) : (index += 1) {
-                    tuple[index] = try parseInternal(std.meta.fields(T)[index].field_type, name ++ "." ++ std.fmt.comptimePrint("{d}", .{index}), value.Array.items[index], options);
+                    tuple[index] = try parseInternal(std.meta.fields(T)[index].field_type, @typeName(T), comptime std.fmt.comptimePrint("{d}", .{index}), value.Array.items[index], options);
                 }
 
                 return tuple;
@@ -215,9 +217,9 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
                             return error.InvalidFieldValue;
                         }
 
-                        const parsed_value = try parseInternal(field.field_type, name ++ "." ++ field.name, field_value.?, options);
+                        const parsed_value = try parseInternal(field.field_type, @typeName(T), field.name, field_value.?, options);
                         // NOTE: This only works for strings!
-                        if (!std.mem.eql(u8, parsed_value, field.default_value.?)) {
+                        if (!std.mem.eql(u8, parsed_value, @ptrCast(*const field.field_type, field.default_value.?).*)) {
                             if (!options.suppress_error_logs) logger.err("comptime field {s}.{s} does not match", .{ @typeName(T), field.name });
 
                             return error.InvalidFieldValue;
@@ -225,9 +227,9 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
                     } else {
                         if (field_value) |fv| {
                             if (@typeInfo(field.field_type) == .Struct and @hasDecl(field.field_type, "__json_is_undefinedable"))
-                                @field(result, field.name) = .{ .value = try parseInternal(field.field_type.__json_T, name ++ "." ++ field.name, fv, options), .missing = false }
+                                @field(result, field.name) = .{ .value = try parseInternal(field.field_type.__json_T, @typeName(T), field.name, fv, options), .missing = false }
                             else
-                                @field(result, field.name) = try parseInternal(field.field_type, name ++ "." ++ field.name, fv, options);
+                                @field(result, field.name) = try parseInternal(field.field_type, @typeName(T), field.name, fv, options);
                         } else {
                             if (@typeInfo(field.field_type) == .Struct and @hasDecl(field.field_type, "__json_is_undefinedable")) {
                                 @field(result, field.name) = .{
@@ -235,7 +237,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
                                     .missing = true,
                                 };
                             } else if (field.default_value) |default| {
-                                @field(result, field.name) = default;
+                                @field(result, field.name) = @ptrCast(*const field.field_type, default).*;
                             } else {
                                 if (!options.suppress_error_logs) logger.err("required field {s}.{s} missing, at {s}", .{ @typeName(T), field.name, name });
 
@@ -271,7 +273,7 @@ fn parseInternal(comptime T: type, comptime name: []const u8, value: std.json.Va
 
                             var array = try (options.allocator orelse return error.AllocatorRequired).alloc(info.child, value.Array.items.len);
                             for (value.Array.items) |item, index|
-                                array[index] = try parseInternal(info.child, name ++ "[...]", item, options);
+                                array[index] = try parseInternal(info.child, @typeName(T), "[...]", item, options);
 
                             return array;
                         } else {
