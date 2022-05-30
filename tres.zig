@@ -197,6 +197,8 @@ fn parseInternal(
     maybe_allocator: ?std.mem.Allocator,
     comptime suppress_error_logs: bool,
 ) ParseInternalError(T)!T {
+    // TODO: Revert name fixes when stage2 comes out
+    // and properly memoizes comptime strings
     const name = parent_name ++ "." ++ field_name;
 
     if (T == std.json.Value) return json_value;
@@ -217,6 +219,8 @@ fn parseInternal(
         .Float => {
             if (json_value == .Float) {
                 return @floatCast(T, json_value.Float);
+            } else if (json_value == .Integer) {
+                return @intToFloat(T, json_value.Integer);
             } else {
                 if (comptime !suppress_error_logs) logger.debug("expected Float, found {s} at {s}", .{ @tagName(json_value), name });
 
@@ -238,7 +242,7 @@ fn parseInternal(
             } else {
                 return try parseInternal(
                     info.child,
-                    name,
+                    @typeName(T),
                     "?",
                     json_value,
                     maybe_allocator,
@@ -273,7 +277,7 @@ fn parseInternal(
                 inline for (info.fields) |field| {
                     if (parseInternal(
                         field.field_type,
-                        name,
+                        @typeName(T),
                         field.name,
                         json_value,
                         maybe_allocator,
@@ -308,7 +312,7 @@ fn parseInternal(
                     while (map_iterator.next()) |entry| {
                         try map.put(entry.key_ptr.*, try parseInternal(
                             Value,
-                            name,
+                            @typeName(T),
                             ".(hashmap entry)",
                             entry.value_ptr.*,
                             maybe_allocator,
@@ -340,7 +344,7 @@ fn parseInternal(
                 inline while (index < std.meta.fields(T).len) : (index += 1) {
                     tuple[index] = try parseInternal(
                         std.meta.fields(T)[index].field_type,
-                        name,
+                        @typeName(T),
                         comptime std.fmt.comptimePrint("[{d}]", .{index}),
                         json_value.Array.items[index],
                         maybe_allocator,
@@ -370,7 +374,7 @@ fn parseInternal(
                         if (field.default_value) |default| {
                             const parsed_value = try parseInternal(
                                 field.field_type,
-                                name,
+                                @typeName(T),
                                 field.name,
                                 field_value.?,
                                 maybe_allocator,
@@ -392,7 +396,7 @@ fn parseInternal(
                                 @field(result, field.name) = .{
                                     .value = try parseInternal(
                                         field.field_type.__json_T,
-                                        name,
+                                        @typeName(T),
                                         field.name,
                                         fv,
                                         maybe_allocator,
@@ -403,7 +407,7 @@ fn parseInternal(
                             else
                                 @field(result, field.name) = try parseInternal(
                                     field.field_type,
-                                    name,
+                                    @typeName(T),
                                     field.name,
                                     fv,
                                     maybe_allocator,
@@ -482,7 +486,7 @@ fn parseInternal(
                         for (json_value.Array.items) |item, index|
                             array[index] = try parseInternal(
                                 info.child,
-                                name,
+                                @typeName(T),
                                 "[...]",
                                 item,
                                 maybe_allocator,
@@ -501,7 +505,7 @@ fn parseInternal(
 
                     data[0] = try parseInternal(
                         info.child,
-                        name,
+                        @typeName(T),
                         "*",
                         json_value,
                         maybe_allocator,
@@ -530,7 +534,7 @@ fn parseInternal(
                 for (array) |*item, index|
                     item.* = try parseInternal(
                         info.child,
-                        name,
+                        @typeName(T),
                         "[...]",
                         json_value.Array.items[index],
                         maybe_allocator,
@@ -556,7 +560,7 @@ fn parseInternal(
                 for (vector) |*item|
                     item.* = try parseInternal(
                         info.child,
-                        name,
+                        @typeName(T),
                         "[...]",
                         item,
                         maybe_allocator,
