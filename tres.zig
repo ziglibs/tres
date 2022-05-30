@@ -44,6 +44,13 @@ pub fn Undefinedable(comptime T: type) type {
 
         value: T,
         missing: bool,
+
+        pub fn asOptional(self: @This()) ?T {
+            return if (self.missing)
+                null
+            else
+                self.value;
+        }
     };
 }
 
