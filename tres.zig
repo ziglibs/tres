@@ -62,6 +62,17 @@ pub fn Undefinedable(comptime T: type) type {
             else
                 self.value;
         }
+
+        pub fn format(self: @This(), comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = fmt;
+            _ = options;
+
+            if (self.missing)
+                try writer.print("Undefinedable({s}){{ missing }}", .{@typeName(T)})
+            else {
+                try writer.print("Undefinedable({s}){{ .value = {any} }}", .{ @typeName(T), self.value });
+            }
+        }
     };
 }
 
@@ -107,6 +118,18 @@ fn ParseInternalErrorImpl(comptime T: type, comptime inferred_types: []const typ
                 InvalidFieldValue,
                 MissingRequiredField,
             };
+
+            if (isArrayList(T)) {
+                const Child = std.meta.Child(@field(T, "Slice"));
+
+                errors = errors || ParseInternalErrorImpl(Child, inferred_set);
+            }
+
+            if (isHashMap(T)) {
+                const Value = std.meta.fields(T.KV)[std.meta.fieldIndex(T.KV, "value") orelse unreachable].field_type;
+
+                errors = errors || ParseInternalErrorImpl(Value, inferred_set);
+            }
 
             if (isAllocatorRequired(T)) {
                 errors = errors || error{AllocatorRequired} || std.mem.Allocator.Error;
@@ -334,7 +357,7 @@ fn parseInternal(
                         try array_list.append(try parseInternal(
                             Child,
                             @typeName(T),
-                            ".(hashmap entry)",
+                            ".(arraylist item)",
                             item,
                             maybe_allocator,
                             suppress_error_logs,
