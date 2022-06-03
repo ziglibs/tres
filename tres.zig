@@ -1,6 +1,17 @@
 const std = @import("std");
 
+fn isArrayList(comptime T: type) bool {
+    // TODO: Improve this ArrayList check, specifically by actually checking the functions we use
+    // TODO: Consider unmanaged ArrayLists
+    if (!@hasField(T, "items")) return false;
+    if (!@hasField(T, "capacity")) return false;
+
+    return true;
+}
+
 fn isHashMap(comptime T: type) bool {
+    // TODO: Consider unmanaged HashMaps
+
     if (!@hasDecl(T, "KV")) return false;
 
     if (!@hasField(T.KV, "key")) return false;
@@ -162,6 +173,13 @@ fn isAllocatorRequiredImpl(comptime T: type, comptime inferred_types: []const ty
             }
         },
         .Struct => |info| {
+            if (isArrayList(T)) {
+                if (T == std.json.Array)
+                    return false;
+
+                return true;
+            }
+
             if (isHashMap(T)) {
                 if (T == std.json.ObjectMap)
                     return false;
@@ -302,6 +320,34 @@ fn parseInternal(
             }
         },
         .Struct => |info| {
+            if (comptime isArrayList(T)) {
+                const Child = std.meta.Child(@field(T, "Slice"));
+
+                if (json_value == .Array) {
+                    if (T == std.json.Array) return json_value.Array;
+
+                    const allocator = maybe_allocator orelse return error.AllocatorRequired;
+
+                    var array_list = try T.initCapacity(allocator, json_value.Array.capacity);
+
+                    for (json_value.Array.items) |item| {
+                        try array_list.append(try parseInternal(
+                            Child,
+                            @typeName(T),
+                            ".(hashmap entry)",
+                            item,
+                            maybe_allocator,
+                            suppress_error_logs,
+                        ));
+                    }
+
+                    return array_list;
+                } else {
+                    if (comptime !suppress_error_logs) logger.debug("expected array of {s} at {s}, found {s}", .{ @typeName(Child), name, @tagName(json_value) });
+                    return error.UnexpectedFieldType;
+                }
+            }
+
             if (comptime isHashMap(T)) {
                 const Key = std.meta.fields(T.KV)[std.meta.fieldIndex(T.KV, "key") orelse unreachable].field_type;
                 const Value = std.meta.fields(T.KV)[std.meta.fieldIndex(T.KV, "value") orelse unreachable].field_type;
@@ -629,6 +675,9 @@ test "json.parse simple struct" {
 
         my_tuple: MyTuple,
         my_array: [2]u8,
+        my_array_of_any: [2]std.json.Value,
+        my_array_list: std.ArrayList(i64),
+        my_array_list_of_any: std.json.Array,
 
         a_pointer: *u8,
         a_weird_string: [*:0]u8,
@@ -664,6 +713,9 @@ test "json.parse simple struct" {
         \\    },
         \\    "my_tuple": [10, false],
         \\    "my_array": [1, 255],
+        \\    "my_array_of_any": ["a", 2],
+        \\    "my_array_list": [2, 254],
+        \\    "my_array_list_of_any": ["b", 3],
         \\    "a_pointer": 5,
         \\    "a_weird_string": "hello"
         \\}
@@ -713,6 +765,20 @@ test "json.parse simple struct" {
     try std.testing.expectEqual(MyTuple{ 10, false }, parsed.my_tuple);
 
     try std.testing.expectEqual([2]u8{ 1, 255 }, parsed.my_array);
+
+    try std.testing.expect(parsed.my_array_of_any[0] == .String);
+    try std.testing.expectEqualStrings("a", parsed.my_array_of_any[0].String);
+    try std.testing.expect(parsed.my_array_of_any[1] == .Integer);
+    try std.testing.expectEqual(@as(i64, 2), parsed.my_array_of_any[1].Integer);
+
+    try std.testing.expectEqual(@as(usize, 2), parsed.my_array_list.items.len);
+    try std.testing.expectEqualSlices(i64, &[_]i64{ 2, 254 }, parsed.my_array_list.items);
+
+    try std.testing.expectEqual(@as(usize, 2), parsed.my_array_list_of_any.items.len);
+    try std.testing.expect(parsed.my_array_list_of_any.items[0] == .String);
+    try std.testing.expectEqualStrings("b", parsed.my_array_list_of_any.items[0].String);
+    try std.testing.expect(parsed.my_array_list_of_any.items[1] == .Integer);
+    try std.testing.expectEqual(@as(i64, 3), parsed.my_array_list_of_any.items[1].Integer);
 
     try std.testing.expectEqual(@as(u8, 5), parsed.a_pointer.*);
 
