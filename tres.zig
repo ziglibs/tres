@@ -774,6 +774,24 @@ pub fn stringify(
                 return stringify(value.items, options, out_stream);
             }
 
+            if (comptime isHashMap(T)) {
+                var iterator = value.iterator();
+                var first = true;
+
+                try out_stream.writeByte('{');
+                while (iterator.next()) |entry| {
+                    if (!first) {
+                        try out_stream.writeByte(',');
+                    } else first = false;
+                    try stringify(entry.key_ptr.*, options, out_stream);
+                    try out_stream.writeByte(':');
+                    try stringify(entry.value_ptr.*, options, out_stream);
+                }
+                try out_stream.writeByte('}');
+
+                return;
+            }
+
             if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
                 return value.jsonStringify(options, out_stream);
             }
@@ -1302,5 +1320,28 @@ test "json.stringify arraylist" {
 
     try std.testing.expectEqualStrings(
         \\{"names_of_my_pals":["Travis","Rimu","Flandere"]}
+    , &stringify_buf);
+}
+
+test "json.stringify hashmaps" {
+    var stringify_buf: [51]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&stringify_buf);
+
+    const Database = struct {
+        coolness: std.StringHashMap(f64),
+    };
+
+    var db = Database{
+        .coolness = std.StringHashMap(f64).init(std.testing.allocator),
+    };
+    defer db.coolness.deinit();
+
+    try db.coolness.put("Montreal", -20);
+    try db.coolness.put("Beirut", 20);
+
+    try stringify(db, .{}, fbs.writer());
+
+    try std.testing.expectEqualStrings(
+        \\{"coolness":{"Montreal":-2.0e+01,"Beirut":2.0e+01}}
     , &stringify_buf);
 }
