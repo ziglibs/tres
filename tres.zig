@@ -656,6 +656,242 @@ fn parseInternal(
     }
 }
 
+fn outputUnicodeEscape(
+    codepoint: u21,
+    out_stream: anytype,
+) !void {
+    if (codepoint <= 0xFFFF) {
+        // If the character is in the Basic Multilingual Plane (U+0000 through U+FFFF),
+        // then it may be represented as a six-character sequence: a reverse solidus, followed
+        // by the lowercase letter u, followed by four hexadecimal digits that encode the character's code point.
+        try out_stream.writeAll("\\u");
+        try std.fmt.formatIntValue(codepoint, "x", std.fmt.FormatOptions{ .width = 4, .fill = '0' }, out_stream);
+    } else {
+        std.debug.assert(codepoint <= 0x10FFFF);
+        // To escape an extended character that is not in the Basic Multilingual Plane,
+        // the character is represented as a 12-character sequence, encoding the UTF-16 surrogate pair.
+        const high = @intCast(u16, (codepoint - 0x10000) >> 10) + 0xD800;
+        const low = @intCast(u16, codepoint & 0x3FF) + 0xDC00;
+        try out_stream.writeAll("\\u");
+        try std.fmt.formatIntValue(high, "x", std.fmt.FormatOptions{ .width = 4, .fill = '0' }, out_stream);
+        try out_stream.writeAll("\\u");
+        try std.fmt.formatIntValue(low, "x", std.fmt.FormatOptions{ .width = 4, .fill = '0' }, out_stream);
+    }
+}
+
+fn outputJsonString(value: []const u8, options: std.json.StringifyOptions, out_stream: anytype) !void {
+    try out_stream.writeByte('\"');
+    var i: usize = 0;
+    while (i < value.len) : (i += 1) {
+        switch (value[i]) {
+            // normal ascii character
+            0x20...0x21, 0x23...0x2E, 0x30...0x5B, 0x5D...0x7F => |c| try out_stream.writeByte(c),
+            // only 2 characters that *must* be escaped
+            '\\' => try out_stream.writeAll("\\\\"),
+            '\"' => try out_stream.writeAll("\\\""),
+            // solidus is optional to escape
+            '/' => {
+                if (options.string.String.escape_solidus) {
+                    try out_stream.writeAll("\\/");
+                } else {
+                    try out_stream.writeByte('/');
+                }
+            },
+            // control characters with short escapes
+            // TODO: option to switch between unicode and 'short' forms?
+            0x8 => try out_stream.writeAll("\\b"),
+            0xC => try out_stream.writeAll("\\f"),
+            '\n' => try out_stream.writeAll("\\n"),
+            '\r' => try out_stream.writeAll("\\r"),
+            '\t' => try out_stream.writeAll("\\t"),
+            else => {
+                const ulen = std.unicode.utf8ByteSequenceLength(value[i]) catch unreachable;
+                // control characters (only things left with 1 byte length) should always be printed as unicode escapes
+                if (ulen == 1 or options.string.String.escape_unicode) {
+                    const codepoint = std.unicode.utf8Decode(value[i .. i + ulen]) catch unreachable;
+                    try outputUnicodeEscape(codepoint, out_stream);
+                } else {
+                    try out_stream.writeAll(value[i .. i + ulen]);
+                }
+                i += ulen - 1;
+            },
+        }
+    }
+    try out_stream.writeByte('\"');
+}
+
+pub fn stringify(
+    value: anytype,
+    options: std.json.StringifyOptions,
+    out_stream: anytype,
+) @TypeOf(out_stream).Error!void {
+    const T = @TypeOf(value);
+    switch (@typeInfo(T)) {
+        .Float, .ComptimeFloat => {
+            return std.fmt.formatFloatScientific(value, std.fmt.FormatOptions{}, out_stream);
+        },
+        .Int, .ComptimeInt => {
+            return std.fmt.formatIntValue(value, "", std.fmt.FormatOptions{}, out_stream);
+        },
+        .Bool => {
+            return out_stream.writeAll(if (value) "true" else "false");
+        },
+        .Null => {
+            return out_stream.writeAll("null");
+        },
+        .Optional => {
+            if (value) |payload| {
+                return try stringify(payload, options, out_stream);
+            } else {
+                return try stringify(null, options, out_stream);
+            }
+        },
+        .Enum => {
+            if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
+                return value.jsonStringify(options, out_stream);
+            }
+
+            @compileError("Unable to stringify enum '" ++ @typeName(T) ++ "'");
+        },
+        .Union => {
+            if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
+                return value.jsonStringify(options, out_stream);
+            }
+
+            const info = @typeInfo(T).Union;
+            if (info.tag_type) |UnionTagType| {
+                inline for (info.fields) |u_field| {
+                    if (value == @field(UnionTagType, u_field.name)) {
+                        return try stringify(@field(value, u_field.name), options, out_stream);
+                    }
+                }
+            } else {
+                @compileError("Unable to stringify untagged union '" ++ @typeName(T) ++ "'");
+            }
+        },
+        .Struct => |S| {
+            if (comptime isArrayList(T)) {
+                return stringify(value.items, options, out_stream);
+            }
+
+            if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
+                return value.jsonStringify(options, out_stream);
+            }
+
+            try out_stream.writeByte('{');
+            var field_output = false;
+            var child_options = options;
+            if (child_options.whitespace) |*child_whitespace| {
+                child_whitespace.indent_level += 1;
+            }
+            inline for (S.fields) |Field| {
+                // don't include void fields
+                if (Field.field_type == void) continue;
+
+                var emit_field = true;
+
+                // don't include optional fields that are null when emit_null_optional_fields is set to false
+                if (@typeInfo(Field.field_type) == .Optional) {
+                    if (options.emit_null_optional_fields == false) {
+                        if (@field(value, Field.name) == null) {
+                            emit_field = false;
+                        }
+                    }
+                }
+
+                const is_undefinedable = comptime @typeInfo(@TypeOf(@field(value, Field.name))) == .Struct and @hasDecl(@TypeOf(@field(value, Field.name)), "__json_is_undefinedable");
+                if (is_undefinedable) {
+                    if (@field(value, Field.name).missing)
+                        emit_field = false;
+                }
+
+                if (emit_field) {
+                    if (!field_output) {
+                        field_output = true;
+                    } else {
+                        try out_stream.writeByte(',');
+                    }
+                    if (child_options.whitespace) |child_whitespace| {
+                        try out_stream.writeByte('\n');
+                        try child_whitespace.outputIndent(out_stream);
+                    }
+                    try outputJsonString(Field.name, options, out_stream);
+                    try out_stream.writeByte(':');
+                    if (child_options.whitespace) |child_whitespace| {
+                        if (child_whitespace.separator) {
+                            try out_stream.writeByte(' ');
+                        }
+                    }
+                    try stringify(if (is_undefinedable)
+                        @field(value, Field.name).value
+                    else
+                        @field(value, Field.name), child_options, out_stream);
+                }
+            }
+            if (field_output) {
+                if (options.whitespace) |whitespace| {
+                    try out_stream.writeByte('\n');
+                    try whitespace.outputIndent(out_stream);
+                }
+            }
+            try out_stream.writeByte('}');
+            return;
+        },
+        .ErrorSet => return stringify(@as([]const u8, @errorName(value)), options, out_stream),
+        .Pointer => |ptr_info| switch (ptr_info.size) {
+            .One => switch (@typeInfo(ptr_info.child)) {
+                .Array => {
+                    const Slice = []const std.meta.Elem(ptr_info.child);
+                    return stringify(@as(Slice, value), options, out_stream);
+                },
+                else => {
+                    // TODO: avoid loops?
+                    return stringify(value.*, options, out_stream);
+                },
+            },
+            // TODO: .Many when there is a sentinel (waiting for https://github.com/ziglang/zig/pull/3972)
+            .Slice => {
+                if (ptr_info.child == u8 and options.string == .String and std.unicode.utf8ValidateSlice(value)) {
+                    try outputJsonString(value, options, out_stream);
+                    return;
+                }
+
+                try out_stream.writeByte('[');
+                var child_options = options;
+                if (child_options.whitespace) |*whitespace| {
+                    whitespace.indent_level += 1;
+                }
+                for (value) |x, i| {
+                    if (i != 0) {
+                        try out_stream.writeByte(',');
+                    }
+                    if (child_options.whitespace) |child_whitespace| {
+                        try out_stream.writeByte('\n');
+                        try child_whitespace.outputIndent(out_stream);
+                    }
+                    try stringify(x, child_options, out_stream);
+                }
+                if (value.len != 0) {
+                    if (options.whitespace) |whitespace| {
+                        try out_stream.writeByte('\n');
+                        try whitespace.outputIndent(out_stream);
+                    }
+                }
+                try out_stream.writeByte(']');
+                return;
+            },
+            else => @compileError("Unable to stringify type '" ++ @typeName(T) ++ "'"),
+        },
+        .Array => return stringify(&value, options, out_stream),
+        .Vector => |info| {
+            const array: [info.len]info.child = value;
+            return stringify(&array, options, out_stream);
+        },
+        else => @compileError("Unable to stringify type '" ++ @typeName(T) ++ "'"),
+    }
+    unreachable;
+}
+
 test "json.parse simple struct" {
     @setEvalBranchQuota(10_000);
 
@@ -997,4 +1233,74 @@ test "json.parse allocator required errors" {
     try std.testing.expectError(error.AllocatorRequired, parse(std.StringArrayHashMap(i64), (try testing_parser.parse(
         \\{"a": 123, "b": -69}
     )).root, null));
+}
+
+test "json.stringify basics" {
+    var stringify_buf: [28]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&stringify_buf);
+
+    const Basic = struct {
+        unsigned: u16,
+        signed: i16,
+    };
+
+    var basic = Basic{
+        .unsigned = 69,
+        .signed = -69,
+    };
+
+    try stringify(basic, .{}, fbs.writer());
+
+    try std.testing.expectEqualStrings(
+        \\{"unsigned":69,"signed":-69}
+    , &stringify_buf);
+}
+
+test "json.stringify undefinedables" {
+    var furry_buf: [49]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&furry_buf);
+
+    const Furry = struct {
+        name: Undefinedable([]const u8),
+        age: Undefinedable(i64),
+        plays_amogus: bool,
+        joe: Undefinedable([]const u8),
+    };
+
+    var rimu = Furry{
+        .name = .{ .value = "Rimu", .missing = false },
+        .age = .{ .value = undefined, .missing = true },
+        .plays_amogus = false,
+        .joe = .{ .value = "Mama", .missing = false },
+    };
+
+    try stringify(rimu, .{}, fbs.writer());
+
+    try std.testing.expectEqualStrings(
+        \\{"name":"Rimu","plays_amogus":false,"joe":"Mama"}
+    , &furry_buf);
+}
+
+test "json.stringify arraylist" {
+    var stringify_buf: [49]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&stringify_buf);
+
+    const Database = struct {
+        names_of_my_pals: std.ArrayList([]const u8),
+    };
+
+    var db = Database{
+        .names_of_my_pals = std.ArrayList([]const u8).init(std.testing.allocator),
+    };
+    defer db.names_of_my_pals.deinit();
+
+    try db.names_of_my_pals.append("Travis");
+    try db.names_of_my_pals.append("Rimu");
+    try db.names_of_my_pals.append("Flandere");
+
+    try stringify(db, .{}, fbs.writer());
+
+    try std.testing.expectEqualStrings(
+        \\{"names_of_my_pals":["Travis","Rimu","Flandere"]}
+    , &stringify_buf);
 }

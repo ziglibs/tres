@@ -1,6 +1,6 @@
 # tres
 
-`std.json.parse` but on `ValueTree`s.
+`std.json.parse` but on `ValueTree`s. Stringify that supports Undefinedables, ArrayLists, and HashMaps.
 
 ## Credit
 
