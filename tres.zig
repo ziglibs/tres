@@ -45,7 +45,7 @@ pub fn isHashMap(comptime T: type) bool {
 }
 
 pub fn parse(comptime T: type, tree: std.json.Value, allocator: ?std.mem.Allocator) ParseInternalError(T)!T {
-    return try parseInternal(T, "root", @typeName(T), tree, allocator, false);
+    return try parseInternal(T, tree, allocator, false);
 }
 
 pub fn Undefinedable(comptime T: type) type {
@@ -239,16 +239,10 @@ fn isAllocatorRequiredImpl(comptime T: type, comptime inferred_types: []const ty
 const logger = std.log.scoped(.json);
 fn parseInternal(
     comptime T: type,
-    comptime parent_name: []const u8,
-    comptime field_name: []const u8,
     json_value: std.json.Value,
     maybe_allocator: ?std.mem.Allocator,
     comptime suppress_error_logs: bool,
 ) ParseInternalError(T)!T {
-    // TODO: Revert name fixes when stage2 comes out
-    // and properly memoizes comptime strings
-    const name = parent_name ++ "." ++ field_name;
-
     if (T == std.json.Value) return json_value;
     if (comptime std.meta.trait.isContainer(T) and @hasDecl(T, "tresParse")) {
         return T.tresParse(json_value, maybe_allocator);
@@ -259,7 +253,7 @@ fn parseInternal(
             if (json_value == .Bool) {
                 return json_value.Bool;
             } else {
-                if (comptime !suppress_error_logs) logger.debug("expected Bool, found {s} at {s}", .{ @tagName(json_value), name });
+                if (comptime !suppress_error_logs) logger.debug("expected Bool, found {s}", .{@tagName(json_value)});
 
                 return error.UnexpectedFieldType;
             }
@@ -270,7 +264,7 @@ fn parseInternal(
             } else if (json_value == .Integer) {
                 return @intToFloat(T, json_value.Integer);
             } else {
-                if (comptime !suppress_error_logs) logger.debug("expected Float, found {s} at {s}", .{ @tagName(json_value), name });
+                if (comptime !suppress_error_logs) logger.debug("expected Float, found {s}", .{@tagName(json_value)});
 
                 return error.UnexpectedFieldType;
             }
@@ -279,7 +273,7 @@ fn parseInternal(
             if (json_value == .Integer) {
                 return std.math.cast(T, json_value.Integer) orelse return error.Overflow;
             } else {
-                if (comptime !suppress_error_logs) logger.debug("expected Integer, found {s} at {s}", .{ @tagName(json_value), name });
+                if (comptime !suppress_error_logs) logger.debug("expected Integer, found {s}", .{@tagName(json_value)});
 
                 return error.UnexpectedFieldType;
             }
@@ -290,8 +284,6 @@ fn parseInternal(
             } else {
                 return try parseInternal(
                     info.child,
-                    @typeName(T),
-                    "?",
                     json_value,
                     maybe_allocator,
                     suppress_error_logs,
@@ -302,7 +294,7 @@ fn parseInternal(
             if (json_value == .Integer) {
                 // we use this to convert signed to unsigned and check if it actually fits.
                 const tag = std.math.cast(std.meta.Tag(T), json_value.Integer) orelse {
-                    if (comptime !suppress_error_logs) logger.debug("invalid enum tag for {s}, found {d} at {s}", .{ @typeName(T), json_value.Integer, name });
+                    if (comptime !suppress_error_logs) logger.debug("invalid enum tag for {s}, found {d}", .{ @typeName(T), json_value.Integer });
 
                     return error.InvalidEnumTag;
                 };
@@ -310,12 +302,12 @@ fn parseInternal(
                 return try std.meta.intToEnum(T, tag);
             } else if (json_value == .String) {
                 return std.meta.stringToEnum(T, json_value.String) orelse {
-                    if (comptime !suppress_error_logs) logger.debug("invalid enum tag for {s}, found '{s}' at {s}", .{ @typeName(T), json_value.String, name });
+                    if (comptime !suppress_error_logs) logger.debug("invalid enum tag for {s}, found '{s}'", .{ @typeName(T), json_value.String });
 
                     return error.InvalidEnumTag;
                 };
             } else {
-                if (comptime !suppress_error_logs) logger.debug("expected Integer or String, found {s} at {s}", .{ @tagName(json_value), name });
+                if (comptime !suppress_error_logs) logger.debug("expected Integer or String, found {s}", .{@tagName(json_value)});
 
                 return error.UnexpectedFieldType;
             }
@@ -325,8 +317,6 @@ fn parseInternal(
                 inline for (info.fields) |field| {
                     if (parseInternal(
                         field.type,
-                        @typeName(T),
-                        field.name,
                         json_value,
                         maybe_allocator,
                         true,
@@ -335,7 +325,7 @@ fn parseInternal(
                     } else |_| {}
                 }
 
-                if (comptime !suppress_error_logs) logger.debug("union fell through for {s}, found {s} at {s}", .{ @typeName(T), @tagName(json_value), name });
+                if (comptime !suppress_error_logs) logger.debug("union fell through for {s}, found {s}", .{ @typeName(T), @tagName(json_value) });
 
                 return error.UnexpectedFieldType;
             } else {
@@ -356,8 +346,6 @@ fn parseInternal(
                     for (json_value.Array.items) |item| {
                         try array_list.append(try parseInternal(
                             Child,
-                            @typeName(T),
-                            ".(arraylist item)",
                             item,
                             maybe_allocator,
                             suppress_error_logs,
@@ -366,7 +354,7 @@ fn parseInternal(
 
                     return array_list;
                 } else {
-                    if (comptime !suppress_error_logs) logger.debug("expected array of {s} at {s}, found {s}", .{ @typeName(Child), name, @tagName(json_value) });
+                    if (comptime !suppress_error_logs) logger.debug("expected array of {s}, found {s}", .{ @typeName(Child), @tagName(json_value) });
                     return error.UnexpectedFieldType;
                 }
             }
@@ -388,8 +376,6 @@ fn parseInternal(
                     while (map_iterator.next()) |entry| {
                         try map.put(entry.key_ptr.*, try parseInternal(
                             Value,
-                            @typeName(T),
-                            ".(hashmap entry)",
                             entry.value_ptr.*,
                             maybe_allocator,
                             suppress_error_logs,
@@ -398,19 +384,19 @@ fn parseInternal(
 
                     return map;
                 } else {
-                    if (comptime !suppress_error_logs) logger.debug("expected map of {s} at {s}, found {s}", .{ @typeName(Value), name, @tagName(json_value) });
+                    if (comptime !suppress_error_logs) logger.debug("expected map of {s} found {s}", .{ @typeName(Value), @tagName(json_value) });
                     return error.UnexpectedFieldType;
                 }
             }
 
             if (info.is_tuple) {
                 if (json_value != .Array) {
-                    if (comptime !suppress_error_logs) logger.debug("expected Array, found {s} at {s}", .{ @tagName(json_value), name });
+                    if (comptime !suppress_error_logs) logger.debug("expected Array, found {s}", .{@tagName(json_value)});
                     return error.UnexpectedFieldType;
                 }
 
                 if (json_value.Array.items.len != std.meta.fields(T).len) {
-                    if (comptime !suppress_error_logs) logger.debug("expected Array to match length of Tuple {s} but it doesn't; at {s}", .{ @typeName(T), name });
+                    if (comptime !suppress_error_logs) logger.debug("expected Array to match length of Tuple {s} but it doesn't", .{@typeName(T)});
                     return error.UnexpectedFieldType;
                 }
 
@@ -420,8 +406,6 @@ fn parseInternal(
                 inline while (index < std.meta.fields(T).len) : (index += 1) {
                     tuple[index] = try parseInternal(
                         std.meta.fields(T)[index].type,
-                        @typeName(T),
-                        comptime std.fmt.comptimePrint("[{d}]", .{index}),
                         json_value.Array.items[index],
                         maybe_allocator,
                         suppress_error_logs,
@@ -442,7 +426,7 @@ fn parseInternal(
 
                     if (field.is_comptime) {
                         if (field_value == null) {
-                            if (comptime !suppress_error_logs) logger.debug("comptime field {s}.{s} missing, at {s}", .{ @typeName(T), field.name, name });
+                            if (comptime !suppress_error_logs) logger.debug("comptime field {s}.{s} missing", .{ @typeName(T), field.name });
 
                             return error.InvalidFieldValue;
                         }
@@ -450,8 +434,6 @@ fn parseInternal(
                         if (field.default_value) |default| {
                             const parsed_value = try parseInternal(
                                 field.type,
-                                @typeName(T),
-                                field.name,
                                 field_value.?,
                                 maybe_allocator,
                                 suppress_error_logs,
@@ -472,8 +454,6 @@ fn parseInternal(
                                 @field(result, field.name) = .{
                                     .value = try parseInternal(
                                         field.type.__json_T,
-                                        @typeName(T),
-                                        field.name,
                                         fv,
                                         maybe_allocator,
                                         suppress_error_logs,
@@ -483,8 +463,6 @@ fn parseInternal(
                             else
                                 @field(result, field.name) = try parseInternal(
                                     field.type,
-                                    @typeName(T),
-                                    field.name,
                                     fv,
                                     maybe_allocator,
                                     suppress_error_logs,
@@ -496,10 +474,10 @@ fn parseInternal(
                                     .missing = true,
                                 };
                             } else if (field.default_value) |default| {
-                                const default_value = @ptrCast(*const field.type, default).*;
+                                const default_value = @ptrCast(*const field.type, @alignCast(@alignOf(field.type), default)).*;
                                 @field(result, field.name) = default_value;
                             } else {
-                                if (comptime !suppress_error_logs) logger.debug("required field {s}.{s} missing, at {s}", .{ @typeName(T), field.name, name });
+                                if (comptime !suppress_error_logs) logger.debug("required field {s}.{s} missing", .{ @typeName(T), field.name });
 
                                 missing_field = true;
                             }
@@ -511,7 +489,7 @@ fn parseInternal(
 
                 return result;
             } else {
-                if (comptime !suppress_error_logs) logger.debug("expected Object, found {s} at {s}", .{ @tagName(json_value), name });
+                if (comptime !suppress_error_logs) logger.debug("expected Object, found {s}", .{@tagName(json_value)});
 
                 return error.UnexpectedFieldType;
             }
@@ -522,7 +500,7 @@ fn parseInternal(
                     if (json_value == .String) {
                         return json_value.String;
                     } else {
-                        if (comptime !suppress_error_logs) logger.debug("expected String, found {s} at {s}", .{ @tagName(json_value), name });
+                        if (comptime !suppress_error_logs) logger.debug("expected String, found {s}", .{@tagName(json_value)});
 
                         return error.UnexpectedFieldType;
                     }
@@ -562,8 +540,6 @@ fn parseInternal(
                         for (json_value.Array.items) |item, index|
                             array[index] = try parseInternal(
                                 info.child,
-                                @typeName(T),
-                                "[...]",
                                 item,
                                 maybe_allocator,
                                 suppress_error_logs,
@@ -571,7 +547,7 @@ fn parseInternal(
 
                         return @ptrCast(T, array);
                     } else {
-                        if (comptime !suppress_error_logs) logger.debug("expected Array, found {s} at {s}", .{ @tagName(json_value), name });
+                        if (comptime !suppress_error_logs) logger.debug("expected Array, found {s}", .{@tagName(json_value)});
 
                         return error.UnexpectedFieldType;
                     }
@@ -581,8 +557,6 @@ fn parseInternal(
 
                     data[0] = try parseInternal(
                         info.child,
-                        @typeName(T),
-                        "*",
                         json_value,
                         maybe_allocator,
                         suppress_error_logs,
@@ -603,15 +577,13 @@ fn parseInternal(
                 }
 
                 if (json_value.Array.items.len != info.len) {
-                    if (comptime !suppress_error_logs) logger.debug("expected Array to match length of {s} but it doesn't; at {s}", .{ @typeName(T), name });
+                    if (comptime !suppress_error_logs) logger.debug("expected Array to match length of {s} but it doesn't", .{@typeName(T)});
                     return error.UnexpectedFieldType;
                 }
 
                 for (array) |*item, index|
                     item.* = try parseInternal(
                         info.child,
-                        @typeName(T),
-                        "[...]",
                         json_value.Array.items[index],
                         maybe_allocator,
                         suppress_error_logs,
@@ -619,7 +591,7 @@ fn parseInternal(
 
                 return array;
             } else {
-                if (comptime !suppress_error_logs) logger.debug("expected Array, found {s} at {s}", .{ @tagName(json_value), name });
+                if (comptime !suppress_error_logs) logger.debug("expected Array, found {s}", .{@tagName(json_value)});
 
                 return error.UnexpectedFieldType;
             }
@@ -629,15 +601,13 @@ fn parseInternal(
                 var vector: T = undefined;
 
                 if (json_value.Array.items.len != info.len) {
-                    if (comptime !suppress_error_logs) logger.debug("expected Array to match length of {s} ({d}) but it doesn't; at {s}", .{ @typeName(T), info.len, name });
+                    if (comptime !suppress_error_logs) logger.debug("expected Array to match length of {s} ({d}) but it doesn't", .{ @typeName(T), info.len });
                     return error.UnexpectedFieldType;
                 }
 
                 for (vector) |*item|
                     item.* = try parseInternal(
                         info.child,
-                        @typeName(T),
-                        "[...]",
                         item,
                         maybe_allocator,
                         suppress_error_logs,
@@ -645,13 +615,13 @@ fn parseInternal(
 
                 return vector;
             } else {
-                if (comptime !suppress_error_logs) logger.debug("expected Array, found {s} at {s}", .{ @tagName(json_value), name });
+                if (comptime !suppress_error_logs) logger.debug("expected Array, found {s}", .{@tagName(json_value)});
 
                 return error.UnexpectedFieldType;
             }
         },
         else => {
-            @compileError("unhandled json type: " ++ @typeName(T) ++ " at " ++ name);
+            @compileError("unhandled json type: " ++ @typeName(T));
         },
     }
 }
