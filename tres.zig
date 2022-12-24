@@ -1,5 +1,10 @@
 const std = @import("std");
 
+/// Use after `isArrayList` and/or `isHashMap`
+pub fn isManaged(comptime T: type) bool {
+    return @hasField(T, "allocator");
+}
+
 pub fn isArrayList(comptime T: type) bool {
     // TODO: Improve this ArrayList check, specifically by actually checking the functions we use
     // TODO: Consider unmanaged ArrayLists
@@ -20,21 +25,27 @@ pub fn isHashMap(comptime T: type) bool {
     const Key = std.meta.fields(T.KV)[std.meta.fieldIndex(T.KV, "key") orelse unreachable].type;
     const Value = std.meta.fields(T.KV)[std.meta.fieldIndex(T.KV, "value") orelse unreachable].type;
 
-    if (!@hasDecl(T, "init")) return false;
     if (!@hasDecl(T, "put")) return false;
-
-    const init = @TypeOf(T.init);
-
-    if (init != fn (std.mem.Allocator) T) return false;
 
     const put = @typeInfo(@TypeOf(T.put));
 
     if (put != .Fn) return false;
 
-    if (put.Fn.params.len != 3) return false;
-    if (put.Fn.params[0].type.? != *T) return false;
-    if (put.Fn.params[1].type.? != Key) return false;
-    if (put.Fn.params[2].type.? != Value) return false;
+    switch (put.Fn.params.len) {
+        3 => {
+            if (put.Fn.params[0].type.? != *T) return false;
+            if (put.Fn.params[1].type.? != Key) return false;
+            if (put.Fn.params[2].type.? != Value) return false;
+        },
+        4 => {
+            if (put.Fn.params[0].type.? != *T) return false;
+            if (put.Fn.params[1].type.? != std.mem.Allocator) return false;
+            if (put.Fn.params[2].type.? != Key) return false;
+            if (put.Fn.params[3].type.? != Value) return false;
+        },
+        else => return false,
+    }
+
     if (put.Fn.return_type == null) return false;
 
     const put_return = @typeInfo(put.Fn.return_type.?);
@@ -42,6 +53,18 @@ pub fn isHashMap(comptime T: type) bool {
     if (put_return.ErrorUnion.payload != void) return false;
 
     return true;
+}
+
+test "isManaged, isArrayList, isHashMap" {
+    const T1 = std.ArrayList(u8);
+    try std.testing.expect(isArrayList(T1) and isManaged(T1));
+    const T2 = std.ArrayListUnmanaged(u8);
+    try std.testing.expect(isArrayList(T2) and !isManaged(T2));
+
+    const T3 = std.AutoHashMap(u8, u16);
+    try std.testing.expect(isHashMap(T3) and isManaged(T3));
+    const T4 = std.AutoHashMapUnmanaged(u8, u16);
+    try std.testing.expect(isHashMap(T4) and !isManaged(T4));
 }
 
 pub fn parse(comptime T: type, tree: std.json.Value, allocator: ?std.mem.Allocator) ParseInternalError(T)!T {
@@ -344,12 +367,20 @@ fn parseInternal(
                     var array_list = try T.initCapacity(allocator, json_value.Array.capacity);
 
                     for (json_value.Array.items) |item| {
-                        try array_list.append(try parseInternal(
-                            Child,
-                            item,
-                            maybe_allocator,
-                            suppress_error_logs,
-                        ));
+                        if (comptime isManaged(T))
+                            try array_list.append(try parseInternal(
+                                Child,
+                                item,
+                                maybe_allocator,
+                                suppress_error_logs,
+                            ))
+                        else
+                            try array_list.append(allocator, try parseInternal(
+                                Child,
+                                item,
+                                maybe_allocator,
+                                suppress_error_logs,
+                            ));
                     }
 
                     return array_list;
@@ -360,6 +391,8 @@ fn parseInternal(
             }
 
             if (comptime isHashMap(T)) {
+                const managed = comptime isManaged(T);
+
                 const Key = std.meta.fields(T.KV)[std.meta.fieldIndex(T.KV, "key") orelse unreachable].type;
                 const Value = std.meta.fields(T.KV)[std.meta.fieldIndex(T.KV, "value") orelse unreachable].type;
 
@@ -370,16 +403,24 @@ fn parseInternal(
 
                     const allocator = maybe_allocator orelse return error.AllocatorRequired;
 
-                    var map = T.init(allocator);
+                    var map: T = if (managed) T.init(allocator) else .{};
                     var map_iterator = json_value.Object.iterator();
 
                     while (map_iterator.next()) |entry| {
-                        try map.put(entry.key_ptr.*, try parseInternal(
-                            Value,
-                            entry.value_ptr.*,
-                            maybe_allocator,
-                            suppress_error_logs,
-                        ));
+                        if (managed)
+                            try map.put(entry.key_ptr.*, try parseInternal(
+                                Value,
+                                entry.value_ptr.*,
+                                maybe_allocator,
+                                suppress_error_logs,
+                            ))
+                        else
+                            try map.put(allocator, entry.key_ptr.*, try parseInternal(
+                                Value,
+                                entry.value_ptr.*,
+                                maybe_allocator,
+                                suppress_error_logs,
+                            ));
                     }
 
                     return map;
@@ -926,6 +967,9 @@ test "json.parse simple struct" {
         number_map: std.StringArrayHashMap(i64),
         players: std.StringHashMap(Player),
 
+        bingus: std.StringHashMapUnmanaged(u8),
+        dumbo_shrimp: std.ArrayListUnmanaged([]const u8),
+
         my_tuple: MyTuple,
         my_array: [2]u8,
         my_array_of_any: [2]std.json.Value,
@@ -964,6 +1008,8 @@ test "json.parse simple struct" {
         \\        "aurame": {"name": "Auguste", "based": true},
         \\        "mattnite": {"name": "Matt", "based": true}
         \\    },
+        \\    "bingus": {"bingus1": 10, "bingus2": 25},
+        \\    "dumbo_shrimp": ["Me", "You", "Everybody"],
         \\    "my_tuple": [10, false],
         \\    "my_array": [1, 255],
         \\    "my_array_of_any": ["a", 2],
@@ -1014,6 +1060,13 @@ test "json.parse simple struct" {
     try std.testing.expectEqualStrings("Matt", parsed.players.get("mattnite").?.name);
     try std.testing.expectEqual(true, parsed.players.get("aurame").?.based);
     try std.testing.expectEqual(true, parsed.players.get("mattnite").?.based);
+
+    try std.testing.expectEqual(@as(u8, 10), parsed.bingus.get("bingus1").?);
+    try std.testing.expectEqual(@as(u8, 25), parsed.bingus.get("bingus2").?);
+
+    try std.testing.expectEqualStrings("Me", parsed.dumbo_shrimp.items[0]);
+    try std.testing.expectEqualStrings("You", parsed.dumbo_shrimp.items[1]);
+    try std.testing.expectEqualStrings("Everybody", parsed.dumbo_shrimp.items[2]);
 
     try std.testing.expectEqual(MyTuple{ 10, false }, parsed.my_tuple);
 
@@ -1276,50 +1329,67 @@ test "json.stringify undefinedables" {
 }
 
 test "json.stringify arraylist" {
-    var stringify_buf: [49]u8 = undefined;
+    const allocator = std.testing.allocator;
+
+    var stringify_buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&stringify_buf);
 
     const Database = struct {
         names_of_my_pals: std.ArrayList([]const u8),
+        more_peeps: std.ArrayListUnmanaged([]const u8),
     };
 
     var db = Database{
-        .names_of_my_pals = std.ArrayList([]const u8).init(std.testing.allocator),
+        .names_of_my_pals = std.ArrayList([]const u8).init(allocator),
+        .more_peeps = .{},
     };
     defer db.names_of_my_pals.deinit();
+    defer db.more_peeps.deinit(allocator);
 
     try db.names_of_my_pals.append("Travis");
     try db.names_of_my_pals.append("Rimu");
     try db.names_of_my_pals.append("Flandere");
 
+    try db.more_peeps.append(allocator, "Matt");
+    try db.more_peeps.append(allocator, "Felix");
+    try db.more_peeps.append(allocator, "Ben");
+
     try stringify(db, .{}, fbs.writer());
 
     try std.testing.expectEqualStrings(
-        \\{"names_of_my_pals":["Travis","Rimu","Flandere"]}
-    , &stringify_buf);
+        \\{"names_of_my_pals":["Travis","Rimu","Flandere"],"more_peeps":["Matt","Felix","Ben"]}
+    , fbs.getWritten());
 }
 
 test "json.stringify hashmaps" {
-    var stringify_buf: [51]u8 = undefined;
+    const allocator = std.testing.allocator;
+
+    var stringify_buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&stringify_buf);
 
     const Database = struct {
         coolness: std.StringHashMap(f64),
+        height: std.StringHashMapUnmanaged(usize),
     };
 
     var db = Database{
-        .coolness = std.StringHashMap(f64).init(std.testing.allocator),
+        .coolness = std.StringHashMap(f64).init(allocator),
+        .height = .{},
     };
     defer db.coolness.deinit();
+    defer db.height.deinit(allocator);
 
     try db.coolness.put("Montreal", -20);
     try db.coolness.put("Beirut", 20);
 
+    try db.height.put(allocator, "Hudson", 0);
+    try db.height.put(allocator, "Me", 100_000);
+
     try stringify(db, .{}, fbs.writer());
 
     try std.testing.expectEqualStrings(
-        \\{"coolness":{"Montreal":-2.0e+01,"Beirut":2.0e+01}}
-    , &stringify_buf);
+        \\{"coolness":{"Montreal":-2.0e+01,"Beirut":2.0e+01},"height":{"Me":100000,"Hudson":0}}
+    , fbs.getWritten());
 }
 
 test "json.stringify enums" {
