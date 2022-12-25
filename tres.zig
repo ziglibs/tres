@@ -781,6 +781,7 @@ pub fn stringify(
                         return try stringify(@field(value, u_field.name), options, out_stream);
                     }
                 }
+                return;
             } else {
                 @compileError("Unable to stringify untagged union '" ++ @typeName(T) ++ "'");
             }
@@ -921,7 +922,7 @@ pub fn stringify(
             const array: [info.len]info.child = value;
             return stringify(&array, options, out_stream);
         },
-        .Void => try out_stream.writeAll("{}"),
+        .Void => return try out_stream.writeAll("{}"),
         else => @compileError("Unable to stringify type '" ++ @typeName(T) ++ "'"),
     }
     unreachable;
