@@ -921,7 +921,7 @@ pub fn stringify(
             const array: [info.len]info.child = value;
             return stringify(&array, options, out_stream);
         },
-        .Void => try out_stream.writeAll("{}"),
+        .Void => return try out_stream.writeAll("{}"),
         else => @compileError("Unable to stringify type '" ++ @typeName(T) ++ "'"),
     }
     unreachable;
