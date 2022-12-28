@@ -700,45 +700,8 @@ fn parseInternal(
 }
 
 pub const StringifyOptions = struct {
-    pub const Whitespace = struct {
-        /// How many indentation levels deep are we?
-        indent_level: usize = 0,
-
-        /// What character(s) should be used for indentation?
-        indent: union(enum) {
-            Space: u8,
-            Tab: void,
-            None: void,
-        } = .{ .Space = 4 },
-
-        /// After a colon, should whitespace be inserted?
-        separator: bool = true,
-
-        pub fn outputIndent(
-            whitespace: @This(),
-            out_stream: anytype,
-        ) @TypeOf(out_stream).Error!void {
-            var char: u8 = undefined;
-            var n_chars: usize = undefined;
-            switch (whitespace.indent) {
-                .Space => |n_spaces| {
-                    char = ' ';
-                    n_chars = n_spaces;
-                },
-                .Tab => {
-                    char = '\t';
-                    n_chars = 1;
-                },
-                .None => return,
-            }
-            try out_stream.writeByte('\n');
-            n_chars *= whitespace.indent_level;
-            try out_stream.writeByteNTimes(char, n_chars);
-        }
-    };
-
     /// Controls the whitespace emitted
-    whitespace: ?Whitespace = null,
+    whitespace: ?std.json.StringifyOptions.Whitespace = null,
 
     /// Should optional fields with null value be written?
     comptime emit_null_optional_fields: bool = true,
@@ -746,19 +709,15 @@ pub const StringifyOptions = struct {
     string: StringOptions = StringOptions{ .String = .{} },
 
     /// Should []u8 be serialised as a string? or an array?
-    pub const StringOptions = union(enum) {
-        Array,
-        String: StringOutputOptions,
+    pub const StringOptions = std.json.StringifyOptions.StringOptions;
 
-        /// String output options
-        const StringOutputOptions = struct {
-            /// Should '/' be escaped in strings?
-            escape_solidus: bool = false,
-
-            /// Should unicode characters be escaped in strings?
-            escape_unicode: bool = false,
+    pub fn toStandard(so: StringifyOptions) std.json.StringifyOptions {
+        return .{
+            .whitespace = so.whitespace,
+            .emit_null_optional_fields = so.emit_null_optional_fields,
+            .string = so.string,
         };
-    };
+    }
 };
 
 fn outputUnicodeEscape(
@@ -853,7 +812,7 @@ pub fn stringify(
         },
         .Enum => {
             if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
-                return value.jsonStringify(options, out_stream);
+                return value.jsonStringify(options.toStandard(), out_stream);
             }
 
             if (@hasDecl(T, "tres_string_enum")) {
@@ -864,7 +823,7 @@ pub fn stringify(
         },
         .Union => {
             if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
-                return value.jsonStringify(options, out_stream);
+                return value.jsonStringify(options.toStandard(), out_stream);
             }
 
             const info = @typeInfo(T).Union;
@@ -903,7 +862,7 @@ pub fn stringify(
             }
 
             if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
-                return value.jsonStringify(options, out_stream);
+                return value.jsonStringify(options.toStandard(), out_stream);
             }
 
             try out_stream.writeByte('{');
@@ -1582,4 +1541,23 @@ test "parse and stringify null meaning" {
 
     fbs.reset();
     testing_parser.reset();
+}
+
+test "custom standard stringify" {
+    const Bruh = struct {
+        pub fn jsonStringify(
+            _: @This(),
+            _: std.json.StringifyOptions,
+            writer: anytype,
+        ) @TypeOf(writer).Error!void {
+            try writer.writeAll("slay");
+        }
+    };
+
+    var stringify_buf: [128]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&stringify_buf);
+
+    try stringify(Bruh{}, .{}, fbs.writer());
+
+    try std.testing.expectEqualStrings("slay", fbs.getWritten());
 }
