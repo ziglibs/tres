@@ -99,6 +99,27 @@ pub fn Undefinedable(comptime T: type) type {
     };
 }
 
+const NullMeaning = enum {
+    /// ?T; a null leads to the field not being written
+    field,
+    /// ?T; a null leads to the field being written with the value null
+    value,
+    /// ??T; first null is field, second null is value
+    dual,
+};
+
+// TODO: Respect stringify options
+fn nullMeaning(comptime T: type, comptime field: std.builtin.Type.StructField, comptime default: NullMeaning) NullMeaning {
+    const true_default = td: {
+        if (@typeInfo(T) == .Optional and @typeInfo(@typeInfo(T).Optional.child) == .Optional) break :td .dual;
+        break :td default;
+    };
+    if (!@hasDecl(T, "tres_null_meaning")) return true_default;
+    const tnm = @field(T, "tres_null_meaning");
+    if (!@hasField(@TypeOf(tnm), field.name)) return true_default;
+    return @field(tnm, field.name);
+}
+
 pub fn ParseInternalError(comptime T: type) type {
     // `inferred_types` is used to avoid infinite recursion for recursive type definitions.
     const inferred_types = [_]type{};
@@ -463,6 +484,8 @@ fn parseInternal(
                 var missing_field = false;
 
                 inline for (info.fields) |field| {
+                    const nm = comptime nullMeaning(T, field, .value);
+
                     const field_value = json_value.Object.get(field.name);
 
                     if (field.is_comptime) {
@@ -489,6 +512,12 @@ fn parseInternal(
                                 return error.InvalidFieldValue;
                             }
                         } else unreachable; // zig requires comptime fields to have a default initialization value
+                    } else if (nm == .dual) {
+                        if (field_value == null) {
+                            @field(result, field.name) = null;
+                        } else {
+                            @field(result, field.name) = try parseInternal(@typeInfo(@TypeOf(@field(result, field.name))).Optional.child, field_value.?, maybe_allocator, suppress_error_logs);
+                        }
                     } else {
                         if (field_value) |fv| {
                             if (@typeInfo(field.type) == .Struct and @hasDecl(field.type, "__json_is_undefinedable"))
@@ -517,6 +546,8 @@ fn parseInternal(
                             } else if (field.default_value) |default| {
                                 const default_value = @ptrCast(*const field.type, @alignCast(@alignOf(field.type), default)).*;
                                 @field(result, field.name) = default_value;
+                            } else if (nm == .field) {
+                                @field(result, field.name) = null;
                             } else {
                                 if (comptime !suppress_error_logs) logger.debug("required field {s}.{s} missing", .{ @typeName(T), field.name });
 
@@ -668,6 +699,68 @@ fn parseInternal(
     }
 }
 
+pub const StringifyOptions = struct {
+    pub const Whitespace = struct {
+        /// How many indentation levels deep are we?
+        indent_level: usize = 0,
+
+        /// What character(s) should be used for indentation?
+        indent: union(enum) {
+            Space: u8,
+            Tab: void,
+            None: void,
+        } = .{ .Space = 4 },
+
+        /// After a colon, should whitespace be inserted?
+        separator: bool = true,
+
+        pub fn outputIndent(
+            whitespace: @This(),
+            out_stream: anytype,
+        ) @TypeOf(out_stream).Error!void {
+            var char: u8 = undefined;
+            var n_chars: usize = undefined;
+            switch (whitespace.indent) {
+                .Space => |n_spaces| {
+                    char = ' ';
+                    n_chars = n_spaces;
+                },
+                .Tab => {
+                    char = '\t';
+                    n_chars = 1;
+                },
+                .None => return,
+            }
+            try out_stream.writeByte('\n');
+            n_chars *= whitespace.indent_level;
+            try out_stream.writeByteNTimes(char, n_chars);
+        }
+    };
+
+    /// Controls the whitespace emitted
+    whitespace: ?Whitespace = null,
+
+    /// Should optional fields with null value be written?
+    comptime emit_null_optional_fields: bool = true,
+
+    string: StringOptions = StringOptions{ .String = .{} },
+
+    /// Should []u8 be serialised as a string? or an array?
+    pub const StringOptions = union(enum) {
+        Array,
+        String: StringOutputOptions,
+
+        /// String output options
+        const StringOutputOptions = struct {
+            /// Should '/' be escaped in strings?
+            escape_solidus: bool = false,
+
+            /// Should unicode characters be escaped in strings?
+            escape_unicode: bool = false,
+        };
+    };
+};
+
 fn outputUnicodeEscape(
     codepoint: u21,
     out_stream: anytype,
@@ -691,7 +784,7 @@ fn outputUnicodeEscape(
     }
 }
 
-fn outputJsonString(value: []const u8, options: std.json.StringifyOptions, out_stream: anytype) !void {
+fn outputJsonString(value: []const u8, options: StringifyOptions, out_stream: anytype) !void {
     try out_stream.writeByte('\"');
     var i: usize = 0;
     while (i < value.len) : (i += 1) {
@@ -734,7 +827,7 @@ fn outputJsonString(value: []const u8, options: std.json.StringifyOptions, out_s
 
 pub fn stringify(
     value: anytype,
-    options: std.json.StringifyOptions,
+    options: StringifyOptions,
     out_stream: anytype,
 ) @TypeOf(out_stream).Error!void {
     const T = @TypeOf(value);
@@ -820,6 +913,8 @@ pub fn stringify(
                 child_whitespace.indent_level += 1;
             }
             inline for (S.fields) |Field| {
+                const nm = comptime nullMeaning(T, Field, if (options.emit_null_optional_fields) .value else .field);
+
                 // don't include void fields
                 if (Field.type == void) continue;
 
@@ -827,7 +922,7 @@ pub fn stringify(
 
                 // don't include optional fields that are null when emit_null_optional_fields is set to false
                 if (@typeInfo(Field.type) == .Optional) {
-                    if (options.emit_null_optional_fields == false) {
+                    if (nm == .field or nm == .dual) {
                         if (@field(value, Field.name) == null) {
                             emit_field = false;
                         }
@@ -857,8 +952,11 @@ pub fn stringify(
                             try out_stream.writeByte(' ');
                         }
                     }
+
                     try stringify(if (is_undefinedable)
                         @field(value, Field.name).value
+                    else if (nm == .dual)
+                        @field(value, Field.name).?
                     else
                         @field(value, Field.name), child_options, out_stream);
                 }
@@ -1422,4 +1520,66 @@ test "json.stringify enums" {
     try std.testing.expectEqualStrings(
         \\"a"
     , fbs.getWritten());
+}
+
+test "parse and stringify null meaning" {
+    const A = struct {
+        pub const tres_null_meaning = .{
+            .a = .field,
+            .b = .value,
+            .c = .dual,
+        };
+
+        a: ?u8,
+        b: ?u8,
+        c: ??u8,
+    };
+
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+
+    var stringify_buf: [128]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&stringify_buf);
+
+    try stringify(A{ .a = null, .b = null, .c = null }, .{}, fbs.writer());
+    try std.testing.expectEqualStrings(
+        \\{"b":null}
+    , fbs.getWritten());
+
+    const a1 = try parse(A, (try testing_parser.parse(fbs.getWritten())).root, allocator);
+    try std.testing.expectEqual(@as(?u8, null), a1.a);
+    try std.testing.expectEqual(@as(?u8, null), a1.b);
+    try std.testing.expectEqual(@as(??u8, null), a1.c);
+
+    fbs.reset();
+    testing_parser.reset();
+
+    try stringify(A{ .a = 5, .b = 7, .c = @as(?u8, null) }, .{}, fbs.writer());
+    try std.testing.expectEqualStrings(
+        \\{"a":5,"b":7,"c":null}
+    , fbs.getWritten());
+
+    const a2 = try parse(A, (try testing_parser.parse(fbs.getWritten())).root, allocator);
+    try std.testing.expectEqual(@as(u8, 5), a2.a.?);
+    try std.testing.expectEqual(@as(u8, 7), a2.b.?);
+    try std.testing.expectEqual(@as(?u8, null), a2.c.?);
+
+    fbs.reset();
+    testing_parser.reset();
+
+    try stringify(A{ .a = 5, .b = 7, .c = 10 }, .{}, fbs.writer());
+    try std.testing.expectEqualStrings(
+        \\{"a":5,"b":7,"c":10}
+    , fbs.getWritten());
+
+    const a3 = try parse(A, (try testing_parser.parse(fbs.getWritten())).root, allocator);
+    try std.testing.expectEqual(@as(u8, 5), a3.a.?);
+    try std.testing.expectEqual(@as(u8, 7), a3.b.?);
+    try std.testing.expectEqual(@as(u8, 10), a3.c.?.?);
+
+    fbs.reset();
+    testing_parser.reset();
 }
