@@ -954,7 +954,6 @@ pub fn stringify(
                 }
                 if (value.len != 0) {
                     if (options.whitespace) |whitespace| {
-                        try out_stream.writeByte('\n');
                         try whitespace.outputIndent(out_stream);
                     }
                 }
