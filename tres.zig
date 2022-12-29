@@ -67,6 +67,7 @@ test "isManaged, isArrayList, isHashMap" {
     try std.testing.expect(isHashMap(T4) and !isManaged(T4));
 }
 
+/// Arena recommended.
 pub fn parse(comptime T: type, tree: std.json.Value, allocator: ?std.mem.Allocator) ParseInternalError(T)!T {
     return try parseInternal(T, tree, allocator, false);
 }
@@ -990,9 +991,240 @@ pub fn stringify(
     unreachable;
 }
 
-test "json.parse simple struct" {
-    @setEvalBranchQuota(10_000);
+pub const ToValueOptions = struct {
+    copy_strings: bool = false,
+    // TODO: Add string options
+};
 
+/// Arena recommended.
+pub fn toValue(
+    allocator: std.mem.Allocator,
+    value: anytype,
+    options: ToValueOptions,
+) std.mem.Allocator.Error!std.json.Value {
+    const T = @TypeOf(value);
+
+    if (T == std.json.Value) return value;
+    if (comptime std.meta.trait.isContainer(T) and @hasDecl(T, "tresParse")) {
+        return T.tresToValue(allocator, value, options);
+    }
+
+    switch (@typeInfo(T)) {
+        .Bool => {
+            return .{
+                .Bool = value,
+            };
+        },
+        .Float => {
+            return .{
+                .Float = value,
+            };
+        },
+        .Int => |i| {
+            return if (i.bits > 64) .{
+                .NumberString = std.fmt.allocPrint(allocator, "{d}", .{value}),
+            } else .{
+                .Integer = value,
+            };
+        },
+        .Optional => {
+            return if (value) |val|
+                toValue(allocator, val, options)
+            else
+                .Null;
+        },
+        .Enum => {
+            return if (@hasDecl(T, "tres_string_enum")) .{ .String = @tagName(value) } else toValue(allocator, @enumToInt(value), options);
+        },
+        .Union => |info| {
+            if (info.tag_type != null) {
+                inline for (info.fields) |field| {
+                    if (@field(T, field.name) == value) {
+                        return toValue(allocator, @field(value, field.name), options);
+                    }
+                }
+
+                unreachable;
+            } else {
+                @compileError("cannot toValue an untagged union: " ++ @typeName(T));
+            }
+        },
+        .Struct => |info| {
+            if (comptime isArrayList(T)) {
+                const Child = std.meta.Child(@field(T, "Slice"));
+
+                if (Child == u8) {
+                    return .{ .String = if (options.copy_strings)
+                        try allocator.dupe(u8, value.items)
+                    else
+                        value.items };
+                } else {
+                    var arr = std.json.Array.initCapacity(allocator, value.items);
+                    for (value.items) |item| try arr.append(try toValue(allocator, item, options));
+                    return .{ .Array = arr };
+                }
+            }
+
+            if (comptime isHashMap(T)) {
+                const Key = std.meta.fields(T.KV)[std.meta.fieldIndex(T.KV, "key") orelse unreachable].type;
+                // const Value = std.meta.fields(T.KV)[std.meta.fieldIndex(T.KV, "value") orelse unreachable].type;
+
+                if (Key != []const u8) @compileError("HashMap key must be of type []const u8!");
+
+                var obj = std.json.ObjectMap.init(allocator);
+                var it = value.iterator();
+                while (it.next()) |entry| {
+                    try obj.put(if (options.copy_strings)
+                        try allocator.dupe(u8, entry.key_ptr.*)
+                    else
+                        entry.key_ptr.*, try toValue(allocator, entry.value_ptr.*, options));
+                }
+                return .{ .Object = obj };
+            }
+
+            if (info.is_tuple) {
+                var arr = std.json.Array.initCapacity(allocator, info.fields.len);
+                inline for (value) |item| try arr.append(try toValue(allocator, item, options));
+                return .{ .Array = arr };
+            }
+
+            var obj = std.json.ObjectMap.init(allocator);
+
+            inline for (info.fields) |field| {
+                const field_val = @field(value, field.name);
+                const nm = comptime nullMeaning(T, field, .value);
+
+                if (field.is_comptime) {
+                    if (field.default_value) |default| {
+                        const default_value = @ptrCast(*const field.type, @alignCast(@alignOf(field.type), default)).*;
+                        try obj.put(field.name, try toValue(allocator, default_value, options));
+                    } else unreachable; // zig requires comptime fields to have a default initialization value
+                } else if (nm == .dual) {
+                    if (field_val) |val| {
+                        if (val) |val2| {
+                            try obj.put(field.name, try toValue(allocator, val2, options));
+                        } else try obj.put(field.name, .Null);
+                    }
+                } else if (nm == .field) {
+                    if (field_val) |val| {
+                        try obj.put(field.name, try toValue(allocator, val, options));
+                    }
+                } else if (@typeInfo(field.type) == .Struct and @hasDecl(field.type, "__json_is_undefinedable")) {
+                    if (!field_val.missing) {
+                        try obj.put(field.name, try toValue(allocator, field_val.value, options));
+                    }
+                } else {
+                    try obj.put(field.name, try toValue(allocator, field_val, options));
+                }
+            }
+
+            return .{ .Object = obj };
+        },
+        // .Pointer => |info| {
+        //     if (info.size == .Slice) {
+        //         if (info.child == u8) {
+        //             if (json_value == .String) {
+        //                 return json_value.String;
+        //             } else {
+        //                 if (comptime !suppress_error_logs) logger.debug("expected String, found {s}", .{@tagName(json_value)});
+
+        //                 return error.UnexpectedFieldType;
+        //             }
+        //         } else if (info.child == std.json.Value) {
+        //             return json_value.Array.items;
+        //         }
+        //     }
+
+        //     const allocator = maybe_allocator orelse return error.AllocatorRequired;
+        //     switch (info.size) {
+        //         .Slice, .Many => {
+        //             const sentinel = if (info.sentinel) |ptr| @ptrCast(*const info.child, ptr).* else null;
+
+        //             if (info.child == u8 and json_value == .String) {
+        //                 const array = try allocator.allocWithOptions(
+        //                     info.child,
+        //                     json_value.String.len,
+        //                     info.alignment,
+        //                     sentinel,
+        //                 );
+
+        //                 std.mem.copy(u8, array, json_value.String);
+
+        //                 return @ptrCast(T, array);
+        //             }
+
+        //             if (json_value == .Array) {
+        //                 if (info.child == std.json.Value) return json_value.Array.items;
+
+        //                 const array = try allocator.allocWithOptions(
+        //                     info.child,
+        //                     json_value.Array.items.len,
+        //                     info.alignment,
+        //                     sentinel,
+        //                 );
+
+        //                 for (json_value.Array.items) |item, index|
+        //                     array[index] = try parseInternal(
+        //                         info.child,
+        //                         item,
+        //                         maybe_allocator,
+        //                         suppress_error_logs,
+        //                     );
+
+        //                 return @ptrCast(T, array);
+        //             } else {
+        //                 if (comptime !suppress_error_logs) logger.debug("expected Array, found {s}", .{@tagName(json_value)});
+
+        //                 return error.UnexpectedFieldType;
+        //             }
+        //         },
+        //         .One, .C => {
+        //             const data = try allocator.allocWithOptions(info.child, 1, info.alignment, null);
+
+        //             data[0] = try parseInternal(
+        //                 info.child,
+        //                 json_value,
+        //                 maybe_allocator,
+        //                 suppress_error_logs,
+        //             );
+
+        //             return &data[0];
+        //         },
+        //     }
+        // },
+        .Array => |info| {
+            const l = info.len + if (info.sentinel) 1 else 0;
+            var arr = try std.json.Array.initCapacity(allocator, l);
+            arr.items.len = l;
+
+            if (info.sentinel) |ptr| {
+                const sentinel = @ptrCast(*const info.child, ptr).*;
+
+                arr.items[l - 1] = sentinel;
+            }
+
+            for (arr) |*item, index|
+                item.* = try toValue(allocator, value[index], options);
+
+            return arr;
+        },
+        .Vector => |info| {
+            var arr = try std.json.Array.initCapacity(allocator, info.len);
+            arr.items.len = info.len;
+
+            for (arr.items) |*item, i|
+                item.* = try toValue(allocator, value[i], options);
+
+            return arr;
+        },
+        .Void => return .{ .Object = std.json.ObjectMap.init(allocator) },
+        else => {
+            @compileError("unhandled json type: " ++ @typeName(T));
+        },
+    }
+}
+
+const FullStruct = struct {
     const Role = enum(i64) { crewmate, impostor, ghost };
 
     const Union = union(enum) {
@@ -1015,33 +1247,35 @@ test "json.parse simple struct" {
 
     const MyTuple = std.meta.Tuple(&[_]type{ i64, bool });
 
-    const Struct = struct {
-        bool_true: bool,
-        bool_false: bool,
-        integer: u8,
-        float: f64,
-        optional: ?f32,
-        an_enum: Role,
-        an_enum_string: Role,
-        slice: []i64,
-        substruct: Substruct,
+    bool_true: bool,
+    bool_false: bool,
+    integer: u8,
+    float: f64,
+    optional: ?f32,
+    an_enum: Role,
+    an_enum_string: Role,
+    slice: []i64,
+    substruct: Substruct,
 
-        random_map: std.json.ObjectMap,
-        number_map: std.StringArrayHashMap(i64),
-        players: std.StringHashMap(Player),
+    random_map: std.json.ObjectMap,
+    number_map: std.StringArrayHashMap(i64),
+    players: std.StringHashMap(Player),
 
-        bingus: std.StringHashMapUnmanaged(u8),
-        dumbo_shrimp: std.ArrayListUnmanaged([]const u8),
+    bingus: std.StringHashMapUnmanaged(u8),
+    dumbo_shrimp: std.ArrayListUnmanaged([]const u8),
 
-        my_tuple: MyTuple,
-        my_array: [2]u8,
-        my_array_of_any: [2]std.json.Value,
-        my_array_list: std.ArrayList(i64),
-        my_array_list_of_any: std.json.Array,
+    my_tuple: MyTuple,
+    my_array: [2]u8,
+    my_array_of_any: [2]std.json.Value,
+    my_array_list: std.ArrayList(i64),
+    my_array_list_of_any: std.json.Array,
 
-        a_pointer: *u8,
-        a_weird_string: [*:0]u8,
-    };
+    a_pointer: *u8,
+    a_weird_string: [*:0]u8,
+};
+
+test "json.parse simple struct" {
+    @setEvalBranchQuota(10_000);
 
     const json =
         \\{
@@ -1090,15 +1324,15 @@ test "json.parse simple struct" {
     var testing_parser = std.json.Parser.init(arena.allocator(), false);
     const tree = try testing_parser.parse(json);
 
-    const parsed = try parse(Struct, tree.root, arena.allocator());
+    const parsed = try parse(FullStruct, tree.root, arena.allocator());
 
     try std.testing.expectEqual(true, parsed.bool_true);
     try std.testing.expectEqual(false, parsed.bool_false);
     try std.testing.expectEqual(@as(u8, 100), parsed.integer);
     try std.testing.expectApproxEqRel(@as(f64, 4.2069), parsed.float, std.math.epsilon(f64));
     try std.testing.expectEqual(@as(?f32, null), parsed.optional);
-    try std.testing.expectEqual(Role.impostor, parsed.an_enum);
-    try std.testing.expectEqual(Role.crewmate, parsed.an_enum_string);
+    try std.testing.expectEqual(FullStruct.Role.impostor, parsed.an_enum);
+    try std.testing.expectEqual(FullStruct.Role.crewmate, parsed.an_enum_string);
     try std.testing.expectEqualSlices(i64, &[_]i64{ 1, 2, 3, 4, 5, 6 }, parsed.slice);
 
     try std.testing.expect(parsed.substruct.value == .String);
@@ -1131,7 +1365,7 @@ test "json.parse simple struct" {
     try std.testing.expectEqualStrings("You", parsed.dumbo_shrimp.items[1]);
     try std.testing.expectEqualStrings("Everybody", parsed.dumbo_shrimp.items[2]);
 
-    try std.testing.expectEqual(MyTuple{ 10, false }, parsed.my_tuple);
+    try std.testing.expectEqual(FullStruct.MyTuple{ 10, false }, parsed.my_tuple);
 
     try std.testing.expectEqual([2]u8{ 1, 255 }, parsed.my_array);
 
@@ -1565,4 +1799,73 @@ test "custom standard stringify" {
     try stringify(Bruh{}, .{}, fbs.writer());
 
     try std.testing.expectEqualStrings("slay", fbs.getWritten());
+}
+
+test "json.toValue: basics" {
+    const allocator = std.testing.allocator;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const bool_simple = try toValue(arena.allocator(), @as(bool, false), .{});
+    try std.testing.expect(bool_simple == .Bool);
+    try std.testing.expectEqual(false, bool_simple.Bool);
+
+    const float_simple = try toValue(arena.allocator(), @as(f64, 7.89), .{});
+    try std.testing.expect(float_simple == .Float);
+    try std.testing.expectEqual(@as(f64, 7.89), float_simple.Float);
+
+    const int_simple = try toValue(arena.allocator(), @as(i64, 10), .{});
+    try std.testing.expect(int_simple == .Integer);
+    try std.testing.expectEqual(@as(i64, 10), int_simple.Integer);
+
+    const optional_simple_1 = try toValue(arena.allocator(), @as(?f64, 7.89), .{});
+    try std.testing.expect(optional_simple_1 == .Float);
+    try std.testing.expectEqual(@as(f64, 7.89), optional_simple_1.Float);
+
+    const optional_simple_2 = try toValue(arena.allocator(), @as(?f64, null), .{});
+    try std.testing.expect(optional_simple_2 == .Null);
+
+    const SimpleEnum1 = enum(u32) { a = 0, b = 69, c = 420, d = 42069 };
+    const simple_enum_1 = try toValue(arena.allocator(), SimpleEnum1.b, .{});
+    try std.testing.expect(simple_enum_1 == .Integer);
+    try std.testing.expectEqual(@as(i64, 69), simple_enum_1.Integer);
+
+    const SimpleEnum2 = enum(u32) {
+        pub const tres_string_enum = .{};
+
+        a = 0,
+        b = 69,
+        c = 420,
+        d = 42069,
+    };
+
+    const simple_enum_2 = try toValue(arena.allocator(), SimpleEnum2.b, .{});
+    try std.testing.expect(simple_enum_2 == .String);
+    try std.testing.expectEqualStrings("b", simple_enum_2.String);
+
+    const SimpleUnion = union(enum) {
+        a: i64,
+        b: bool,
+    };
+
+    const simple_union_1 = try toValue(arena.allocator(), SimpleUnion{ .a = 25 }, .{});
+    try std.testing.expect(simple_union_1 == .Integer);
+    try std.testing.expectEqual(@as(i64, 25), simple_union_1.Integer);
+
+    const simple_union_2 = try toValue(arena.allocator(), SimpleUnion{ .b = true }, .{});
+    try std.testing.expect(simple_union_2 == .Bool);
+    try std.testing.expectEqual(true, simple_union_2.Bool);
+
+    const SimpleStruct = struct {
+        abc: u8,
+        def: SimpleEnum1,
+        ghi: SimpleEnum2,
+    };
+
+    const simple_struct = try toValue(arena.allocator(), SimpleStruct{ .abc = 25, .def = .c, .ghi = .d }, .{});
+    try std.testing.expect(simple_struct == .Object);
+    try std.testing.expectEqual(@as(i64, 25), simple_struct.Object.get("abc").?.Integer);
+    try std.testing.expectEqual(@as(i64, 420), simple_struct.Object.get("def").?.Integer);
+    try std.testing.expectEqualStrings("d", simple_struct.Object.get("ghi").?.String);
 }
