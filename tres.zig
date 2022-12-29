@@ -839,30 +839,14 @@ pub fn stringify(
             }
         },
         .Struct => |S| {
-            if (comptime isArrayList(T)) {
-                return stringify(value.items, options, out_stream);
-            }
-
-            if (comptime isHashMap(T)) {
-                var iterator = value.iterator();
-                var first = true;
-
-                try out_stream.writeByte('{');
-                while (iterator.next()) |entry| {
-                    if (!first) {
-                        try out_stream.writeByte(',');
-                    } else first = false;
-                    try stringify(entry.key_ptr.*, options, out_stream);
-                    try out_stream.writeByte(':');
-                    try stringify(entry.value_ptr.*, options, out_stream);
-                }
-                try out_stream.writeByte('}');
-
-                return;
-            }
-
             if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
                 return value.jsonStringify(options.toStandard(), out_stream);
+            }
+            const nm = comptime nullMeaning(T, Field, if (options.emit_null_optional_fields) .value else .field);
+
+
+            if (comptime isArrayList(T)) {
+                return stringify(value.items, options, out_stream);
             }
 
             try out_stream.writeByte('{');
@@ -871,58 +855,79 @@ pub fn stringify(
             if (child_options.whitespace) |*child_whitespace| {
                 child_whitespace.indent_level += 1;
             }
-            inline for (S.fields) |Field| {
-                const nm = comptime nullMeaning(T, Field, if (options.emit_null_optional_fields) .value else .field);
 
-                // don't include void fields
-                if (Field.type == void) continue;
+            if (comptime isHashMap(T)) {
+                var iterator = value.iterator();
 
-                var emit_field = true;
-
-                // don't include optional fields that are null when emit_null_optional_fields is set to false
-                if (@typeInfo(Field.type) == .Optional) {
-                    if (nm == .field or nm == .dual) {
-                        if (@field(value, Field.name) == null) {
-                            emit_field = false;
-                        }
-                    }
-                }
-
-                const is_undefinedable = comptime @typeInfo(@TypeOf(@field(value, Field.name))) == .Struct and @hasDecl(@TypeOf(@field(value, Field.name)), "__json_is_undefinedable");
-                if (is_undefinedable) {
-                    if (@field(value, Field.name).missing)
-                        emit_field = false;
-                }
-
-                if (emit_field) {
+                while (iterator.next()) |entry| {
                     if (!field_output) {
                         field_output = true;
                     } else {
                         try out_stream.writeByte(',');
                     }
                     if (child_options.whitespace) |child_whitespace| {
-                        try out_stream.writeByte('\n');
                         try child_whitespace.outputIndent(out_stream);
                     }
-                    try outputJsonString(Field.name, options, out_stream);
+                    try outputJsonString(entry.key_ptr.*, options, out_stream);
                     try out_stream.writeByte(':');
                     if (child_options.whitespace) |child_whitespace| {
                         if (child_whitespace.separator) {
                             try out_stream.writeByte(' ');
                         }
                     }
+                    try stringify(entry.value_ptr.*, child_options, out_stream);
+                }
+            } else {
+                inline for (S.fields) |Field| {
+                    // don't include void fields
+                    if (Field.type == void) continue;
 
-                    try stringify(if (is_undefinedable)
-                        @field(value, Field.name).value
-                    else if (nm == .dual)
-                        @field(value, Field.name).?
-                    else
-                        @field(value, Field.name), child_options, out_stream);
+                    var emit_field = true;
+
+                    // don't include optional fields that are null when emit_null_optional_fields is set to false
+                    if (@typeInfo(Field.type) == .Optional) {
+                        if (nm == .field or nm == .dual) {
+                            if (@field(value, Field.name) == null) {
+                                emit_field = false;
+                            }
+                        }
+                    }
+
+                    const is_undefinedable = comptime @typeInfo(@TypeOf(@field(value, Field.name))) == .Struct and @hasDecl(@TypeOf(@field(value, Field.name)), "__json_is_undefinedable");
+                    if (is_undefinedable) {
+                        if (@field(value, Field.name).missing)
+                            emit_field = false;
+                    }
+
+                    if (emit_field) {
+                        if (!field_output) {
+                            field_output = true;
+                        } else {
+                            try out_stream.writeByte(',');
+                        }
+                        if (child_options.whitespace) |child_whitespace| {
+                            try child_whitespace.outputIndent(out_stream);
+                        }
+                        try outputJsonString(Field.name, options, out_stream);
+                        try out_stream.writeByte(':');
+                        if (child_options.whitespace) |child_whitespace| {
+                            if (child_whitespace.separator) {
+                                try out_stream.writeByte(' ');
+                            }
+                        }
+
+                        try stringify(if (is_undefinedable)
+                            @field(value, Field.name).value
+                        else if (nm == .dual)
+                            @field(value, Field.name).?
+                        else
+                            @field(value, Field.name), child_options, out_stream);
+                    }
                 }
             }
+
             if (field_output) {
                 if (options.whitespace) |whitespace| {
-                    try out_stream.writeByte('\n');
                     try whitespace.outputIndent(out_stream);
                 }
             }
