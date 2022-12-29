@@ -948,7 +948,6 @@ pub fn stringify(
                         try out_stream.writeByte(',');
                     }
                     if (child_options.whitespace) |child_whitespace| {
-                        try out_stream.writeByte('\n');
                         try child_whitespace.outputIndent(out_stream);
                     }
                     try stringify(x, child_options, out_stream);
