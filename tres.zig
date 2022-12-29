@@ -109,11 +109,15 @@ const NullMeaning = enum {
     dual,
 };
 
+fn dualable(comptime T: type) bool {
+    return @typeInfo(T) == .Optional and @typeInfo(@typeInfo(T).Optional.child) == .Optional;
+}
+
 // TODO: Respect stringify options
-fn nullMeaning(comptime T: type, comptime field: std.builtin.Type.StructField, comptime default: NullMeaning) NullMeaning {
+fn nullMeaning(comptime T: type, comptime field: std.builtin.Type.StructField) ?NullMeaning {
     const true_default = td: {
-        if (@typeInfo(T) == .Optional and @typeInfo(@typeInfo(T).Optional.child) == .Optional) break :td .dual;
-        break :td default;
+        if (dualable(T)) break :td NullMeaning.dual;
+        break :td null;
     };
     if (!@hasDecl(T, "tres_null_meaning")) return true_default;
     const tnm = @field(T, "tres_null_meaning");
@@ -485,7 +489,7 @@ fn parseInternal(
                 var missing_field = false;
 
                 inline for (info.fields) |field| {
-                    const nm = comptime nullMeaning(T, field, .value);
+                    const nm = nullMeaning(T, field) orelse .value;
 
                     const field_value = json_value.Object.get(field.name);
 
@@ -513,7 +517,7 @@ fn parseInternal(
                                 return error.InvalidFieldValue;
                             }
                         } else unreachable; // zig requires comptime fields to have a default initialization value
-                    } else if (nm == .dual) {
+                    } else if (comptime dualable(field.type) and nm == .dual) {
                         if (field_value == null) {
                             @field(result, field.name) = null;
                         } else {
@@ -547,7 +551,7 @@ fn parseInternal(
                             } else if (field.default_value) |default| {
                                 const default_value = @ptrCast(*const field.type, @alignCast(@alignOf(field.type), default)).*;
                                 @field(result, field.name) = default_value;
-                            } else if (nm == .field) {
+                            } else if (@typeInfo(field.type) == .Optional and nm == .field) {
                                 @field(result, field.name) = null;
                             } else {
                                 if (comptime !suppress_error_logs) logger.debug("required field {s}.{s} missing", .{ @typeName(T), field.name });
@@ -700,27 +704,6 @@ fn parseInternal(
     }
 }
 
-pub const StringifyOptions = struct {
-    /// Controls the whitespace emitted
-    whitespace: ?std.json.StringifyOptions.Whitespace = null,
-
-    /// Should optional fields with null value be written?
-    comptime emit_null_optional_fields: bool = true,
-
-    string: StringOptions = StringOptions{ .String = .{} },
-
-    /// Should []u8 be serialised as a string? or an array?
-    pub const StringOptions = std.json.StringifyOptions.StringOptions;
-
-    pub fn toStandard(so: StringifyOptions) std.json.StringifyOptions {
-        return .{
-            .whitespace = so.whitespace,
-            .emit_null_optional_fields = so.emit_null_optional_fields,
-            .string = so.string,
-        };
-    }
-};
-
 fn outputUnicodeEscape(
     codepoint: u21,
     out_stream: anytype,
@@ -744,7 +727,7 @@ fn outputUnicodeEscape(
     }
 }
 
-fn outputJsonString(value: []const u8, options: StringifyOptions, out_stream: anytype) !void {
+fn outputJsonString(value: []const u8, options: std.json.StringifyOptions, out_stream: anytype) !void {
     try out_stream.writeByte('\"');
     var i: usize = 0;
     while (i < value.len) : (i += 1) {
@@ -787,7 +770,7 @@ fn outputJsonString(value: []const u8, options: StringifyOptions, out_stream: an
 
 pub fn stringify(
     value: anytype,
-    options: StringifyOptions,
+    options: std.json.StringifyOptions,
     out_stream: anytype,
 ) @TypeOf(out_stream).Error!void {
     const T = @TypeOf(value);
@@ -813,7 +796,7 @@ pub fn stringify(
         },
         .Enum => {
             if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
-                return value.jsonStringify(options.toStandard(), out_stream);
+                return value.jsonStringify(options, out_stream);
             }
 
             if (@hasDecl(T, "tres_string_enum")) {
@@ -824,7 +807,7 @@ pub fn stringify(
         },
         .Union => {
             if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
-                return value.jsonStringify(options.toStandard(), out_stream);
+                return value.jsonStringify(options, out_stream);
             }
 
             const info = @typeInfo(T).Union;
@@ -841,10 +824,8 @@ pub fn stringify(
         },
         .Struct => |S| {
             if (comptime std.meta.trait.hasFn("jsonStringify")(T)) {
-                return value.jsonStringify(options.toStandard(), out_stream);
+                return value.jsonStringify(options, out_stream);
             }
-            const nm = comptime nullMeaning(T, Field, if (options.emit_null_optional_fields) .value else .field);
-
 
             if (comptime isArrayList(T)) {
                 return stringify(value.items, options, out_stream);
@@ -880,6 +861,8 @@ pub fn stringify(
                 }
             } else {
                 inline for (S.fields) |Field| {
+                    const nm = nullMeaning(T, Field) orelse (if (options.emit_null_optional_fields) NullMeaning.value else NullMeaning.field);
+
                     // don't include void fields
                     if (Field.type == void) continue;
 
@@ -917,12 +900,13 @@ pub fn stringify(
                             }
                         }
 
-                        try stringify(if (is_undefinedable)
-                            @field(value, Field.name).value
-                        else if (nm == .dual)
-                            @field(value, Field.name).?
-                        else
-                            @field(value, Field.name), child_options, out_stream);
+                        if (is_undefinedable) {
+                            try stringify(@field(value, Field.name).value, child_options, out_stream);
+                        } else if (comptime dualable(Field.type) and nm == .dual)
+                            try stringify(@field(value, Field.name).?, child_options, out_stream)
+                        else {
+                            try stringify(@field(value, Field.name), child_options, out_stream);
+                        }
                     }
                 }
             }
@@ -1092,20 +1076,20 @@ pub fn toValue(
 
             inline for (info.fields) |field| {
                 const field_val = @field(value, field.name);
-                const nm = comptime nullMeaning(T, field, .value);
+                const nm = nullMeaning(T, field) orelse .value;
 
                 if (field.is_comptime) {
                     if (field.default_value) |default| {
                         const default_value = @ptrCast(*const field.type, @alignCast(@alignOf(field.type), default)).*;
                         try obj.put(field.name, try toValue(allocator, default_value, options));
                     } else unreachable; // zig requires comptime fields to have a default initialization value
-                } else if (nm == .dual) {
+                } else if (comptime dualable(field.type) and nm == .dual) {
                     if (field_val) |val| {
                         if (val) |val2| {
                             try obj.put(field.name, try toValue(allocator, val2, options));
                         } else try obj.put(field.name, .Null);
                     }
-                } else if (nm == .field) {
+                } else if (@typeInfo(field.type) == .Optional and nm == .field) {
                     if (field_val) |val| {
                         try obj.put(field.name, try toValue(allocator, val, options));
                     }
