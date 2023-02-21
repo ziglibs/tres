@@ -614,7 +614,7 @@ fn parseInternal(
                             sentinel,
                         );
 
-                        for (json_value.Array.items) |item, index|
+                        for (json_value.Array.items, 0..) |item, index|
                             array[index] = try parseInternal(
                                 info.child,
                                 item,
@@ -658,8 +658,8 @@ fn parseInternal(
                     return error.UnexpectedFieldType;
                 }
 
-                for (array) |*item, index|
-                    item.* = try parseInternal(
+                for (array, 0..) |_, index|
+                    array[index] = try parseInternal(
                         info.child,
                         json_value.Array.items[index],
                         maybe_allocator,
@@ -943,7 +943,7 @@ pub fn stringify(
                 if (child_options.whitespace) |*whitespace| {
                     whitespace.indent_level += 1;
                 }
-                for (value) |x, i| {
+                for (value, 0..) |x, i| {
                     if (i != 0) {
                         try out_stream.writeByte(',');
                     }
@@ -1185,7 +1185,7 @@ pub fn toValue(
                 arr.items[l - 1] = sentinel;
             }
 
-            for (arr) |*item, index|
+            for (arr, 0..) |*item, index|
                 item.* = try toValue(allocator, value[index], options);
 
             return arr;
@@ -1194,7 +1194,7 @@ pub fn toValue(
             var arr = try std.json.Array.initCapacity(allocator, info.len);
             arr.items.len = info.len;
 
-            for (arr.items) |*item, i|
+            for (arr.items, 0..) |*item, i|
                 item.* = try toValue(allocator, value[i], options);
 
             return arr;
