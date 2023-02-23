@@ -1,5 +1,26 @@
 const std = @import("std");
 
+/// Validate with more granularity (for example, tres_string_enum makes no sense in a struct)
+fn validateCustomDecls(comptime T: type) void {
+    const map = std.ComptimeStringMap(void, .{
+        .{ "tres_null_meaning", {} },
+        .{ "tres_string_enum", {} },
+        .{ "tres_remap", {} },
+    });
+
+    return switch (@typeInfo(T)) {
+        .Struct, .Enum, .Union => {
+            const decls = std.meta.declarations(T);
+            inline for (decls) |decl| {
+                if (map.has(decl.name) and !decl.is_pub) {
+                    @compileError("Found '" ++ decl.name ++ "' in '" ++ @typeName(T) ++ "' but it isn't public!");
+                }
+            }
+        },
+        else => {},
+    };
+}
+
 /// Use after `isArrayList` and/or `isHashMap`
 pub fn isManaged(comptime T: type) bool {
     return @hasField(T, "allocator");
@@ -123,6 +144,13 @@ fn nullMeaning(comptime T: type, comptime field: std.builtin.Type.StructField) ?
     const tnm = @field(T, "tres_null_meaning");
     if (!@hasField(@TypeOf(tnm), field.name)) return true_default;
     return @field(tnm, field.name);
+}
+
+fn mightRemap(comptime T: type, comptime field: []const u8) []const u8 {
+    if (!@hasDecl(T, "tres_remap")) return field;
+    const remap = @field(T, "tres_remap");
+    if (!@hasField(@TypeOf(remap), field)) return field;
+    return @field(remap, field);
 }
 
 pub fn ParseInternalError(comptime T: type) type {
@@ -292,6 +320,7 @@ fn parseInternal(
     maybe_allocator: ?std.mem.Allocator,
     comptime suppress_error_logs: bool,
 ) ParseInternalError(T)!T {
+    comptime validateCustomDecls(T);
     if (T == std.json.Value) return json_value;
     if (comptime std.meta.trait.isContainer(T) and @hasDecl(T, "tresParse")) {
         return T.tresParse(json_value, maybe_allocator);
@@ -491,7 +520,7 @@ fn parseInternal(
                 inline for (info.fields) |field| {
                     const nm = nullMeaning(T, field) orelse .value;
 
-                    const field_value = json_value.Object.get(field.name);
+                    const field_value = json_value.Object.get(mightRemap(T, field.name));
 
                     if (field.is_comptime) {
                         if (field_value == null) {
@@ -774,6 +803,7 @@ pub fn stringify(
     out_stream: anytype,
 ) @TypeOf(out_stream).Error!void {
     const T = @TypeOf(value);
+    comptime validateCustomDecls(T);
     switch (@typeInfo(T)) {
         .Float, .ComptimeFloat => {
             return std.fmt.formatFloatScientific(value, std.fmt.FormatOptions{}, out_stream);
@@ -892,7 +922,7 @@ pub fn stringify(
                         if (child_options.whitespace) |child_whitespace| {
                             try child_whitespace.outputIndent(out_stream);
                         }
-                        try outputJsonString(Field.name, options, out_stream);
+                        try outputJsonString(mightRemap(T, Field.name), options, out_stream);
                         try out_stream.writeByte(':');
                         if (child_options.whitespace) |child_whitespace| {
                             if (child_whitespace.separator) {
@@ -985,6 +1015,7 @@ pub fn toValue(
     options: ToValueOptions,
 ) std.mem.Allocator.Error!std.json.Value {
     const T = @TypeOf(value);
+    comptime validateCustomDecls(T);
 
     if (T == std.json.Value) return value;
     if (comptime std.meta.trait.isContainer(T) and @hasDecl(T, "tresParse")) {
@@ -1076,27 +1107,29 @@ pub fn toValue(
                 const field_val = @field(value, field.name);
                 const nm = nullMeaning(T, field) orelse .value;
 
+                const field_name = mightRemap(T, field.name);
+
                 if (field.is_comptime) {
                     if (field.default_value) |default| {
                         const default_value = @ptrCast(*const field.type, @alignCast(@alignOf(field.type), default)).*;
-                        try obj.put(field.name, try toValue(allocator, default_value, options));
+                        try obj.put(field_name, try toValue(allocator, default_value, options));
                     } else unreachable; // zig requires comptime fields to have a default initialization value
                 } else if (comptime dualable(field.type) and nm == .dual) {
                     if (field_val) |val| {
                         if (val) |val2| {
-                            try obj.put(field.name, try toValue(allocator, val2, options));
-                        } else try obj.put(field.name, .Null);
+                            try obj.put(field_name, try toValue(allocator, val2, options));
+                        } else try obj.put(field_name, .Null);
                     }
                 } else if (@typeInfo(field.type) == .Optional and nm == .field) {
                     if (field_val) |val| {
-                        try obj.put(field.name, try toValue(allocator, val, options));
+                        try obj.put(field_name, try toValue(allocator, val, options));
                     }
                 } else if (@typeInfo(field.type) == .Struct and @hasDecl(field.type, "__json_is_undefinedable")) {
                     if (!field_val.missing) {
-                        try obj.put(field.name, try toValue(allocator, field_val.value, options));
+                        try obj.put(field_name, try toValue(allocator, field_val.value, options));
                     }
                 } else {
-                    try obj.put(field.name, try toValue(allocator, field_val, options));
+                    try obj.put(field_name, try toValue(allocator, field_val, options));
                 }
             }
 
@@ -1678,7 +1711,7 @@ test "json.stringify enums" {
     };
 
     const StringEnum = enum(u64) {
-        const tres_string_enum = {};
+        pub const tres_string_enum = {};
 
         a = 0,
         b = 1,
@@ -1850,4 +1883,43 @@ test "json.toValue: basics" {
     try std.testing.expectEqual(@as(i64, 25), simple_struct.Object.get("abc").?.Integer);
     try std.testing.expectEqual(@as(i64, 420), simple_struct.Object.get("def").?.Integer);
     try std.testing.expectEqualStrings("d", simple_struct.Object.get("ghi").?.String);
+}
+
+test "remapping" {
+    const allocator = std.testing.allocator;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const Bruh = struct {
+        pub const tres_remap = .{
+            .zig_snake_case = "jsonCamelCase",
+            .zigBadPractice = "json_doesn't_care",
+        };
+
+        zig_snake_case: u8,
+        zigBadPractice: u16,
+    };
+
+    const json =
+        \\{"jsonCamelCase":69,"json_doesn't_care":420}
+    ;
+
+    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    const tree = try testing_parser.parse(json);
+
+    const bruh_1 = try parse(Bruh, tree.root, null);
+    try std.testing.expectEqual(@as(u8, 69), bruh_1.zig_snake_case);
+    try std.testing.expectEqual(@as(u16, 420), bruh_1.zigBadPractice);
+
+    var stringify_buf: [128]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&stringify_buf);
+
+    try stringify(Bruh{ .zig_snake_case = 69, .zigBadPractice = 420 }, .{}, fbs.writer());
+
+    try std.testing.expectEqualStrings(json, fbs.getWritten());
+
+    const value = try toValue(arena.allocator(), bruh_1, .{});
+    try std.testing.expectEqual(@as(i64, 69), value.Object.get("jsonCamelCase").?.Integer);
+    try std.testing.expectEqual(@as(i64, 420), value.Object.get("json_doesn't_care").?.Integer);
 }

@@ -9,15 +9,10 @@
 - `toValue` (T -> std.json.Value)
 
 All the above modes support `std.json` standard features as well as:
-- Enhanced optionals
-- String enums
+- Enhanced optionals (`tres_null_meaning`, see test "parse and stringify null meaning")
+- String enums (`tres_string_enum`, see test "json.stringify enums")
+- Field name remapping (`tres_remap`, see test "remapping")
 - Map and ArrayList support (unmanaged too!)
-
-## Credit
-
-Credit where credit is due :)
-
-Originally written by [Nameless](https://github.com/truemedian). Modified to a compilable state and tested by [Auguste Rame](https://github.com/SuperAuguste).
 
 ## License
 
