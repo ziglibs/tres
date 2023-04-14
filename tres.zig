@@ -546,7 +546,9 @@ fn parseInternal(
                                 return error.InvalidFieldValue;
                             }
                         } else unreachable; // zig requires comptime fields to have a default initialization value
-                    } else if (comptime dualable(field.type) and nm == .dual) {
+                    } else if (dualable(field.type) and nm == .dual) {
+                        if (comptime !dualable(field.type)) unreachable;
+
                         if (field_value == null) {
                             @field(result, field.name) = null;
                         } else {
@@ -932,8 +934,8 @@ pub fn stringify(
 
                         if (is_undefinedable) {
                             try stringify(@field(value, Field.name).value, child_options, out_stream);
-                        } else if (comptime dualable(Field.type) and nm == .dual)
-                            try stringify(@field(value, Field.name).?, child_options, out_stream)
+                        } else if (dualable(Field.type) and nm == .dual)
+                            if (comptime dualable(Field.type)) try stringify(@field(value, Field.name).?, child_options, out_stream) else unreachable
                         else {
                             try stringify(@field(value, Field.name), child_options, out_stream);
                         }
