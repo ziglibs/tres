@@ -328,8 +328,8 @@ fn parseInternal(
 
     switch (@typeInfo(T)) {
         .Bool => {
-            if (json_value == .Bool) {
-                return json_value.Bool;
+            if (json_value == .bool) {
+                return json_value.bool;
             } else {
                 if (comptime !suppress_error_logs) logger.debug("expected Bool, found {s}", .{@tagName(json_value)});
 
@@ -337,10 +337,10 @@ fn parseInternal(
             }
         },
         .Float => {
-            if (json_value == .Float) {
-                return @floatCast(T, json_value.Float);
-            } else if (json_value == .Integer) {
-                return @intToFloat(T, json_value.Integer);
+            if (json_value == .float) {
+                return @floatCast(T, json_value.float);
+            } else if (json_value == .integer) {
+                return @intToFloat(T, json_value.integer);
             } else {
                 if (comptime !suppress_error_logs) logger.debug("expected Float, found {s}", .{@tagName(json_value)});
 
@@ -348,8 +348,8 @@ fn parseInternal(
             }
         },
         .Int => {
-            if (json_value == .Integer) {
-                return std.math.cast(T, json_value.Integer) orelse return error.Overflow;
+            if (json_value == .integer) {
+                return std.math.cast(T, json_value.integer) orelse return error.Overflow;
             } else {
                 if (comptime !suppress_error_logs) logger.debug("expected Integer, found {s}", .{@tagName(json_value)});
 
@@ -357,7 +357,7 @@ fn parseInternal(
             }
         },
         .Optional => |info| {
-            if (json_value == .Null) {
+            if (json_value == .null) {
                 return null;
             } else {
                 return try parseInternal(
@@ -369,18 +369,18 @@ fn parseInternal(
             }
         },
         .Enum => {
-            if (json_value == .Integer) {
+            if (json_value == .integer) {
                 // we use this to convert signed to unsigned and check if it actually fits.
-                const tag = std.math.cast(std.meta.Tag(T), json_value.Integer) orelse {
-                    if (comptime !suppress_error_logs) logger.debug("invalid enum tag for {s}, found {d}", .{ @typeName(T), json_value.Integer });
+                const tag = std.math.cast(std.meta.Tag(T), json_value.integer) orelse {
+                    if (comptime !suppress_error_logs) logger.debug("invalid enum tag for {s}, found {d}", .{ @typeName(T), json_value.integer });
 
                     return error.InvalidEnumTag;
                 };
 
                 return try std.meta.intToEnum(T, tag);
-            } else if (json_value == .String) {
-                return std.meta.stringToEnum(T, json_value.String) orelse {
-                    if (comptime !suppress_error_logs) logger.debug("invalid enum tag for {s}, found '{s}'", .{ @typeName(T), json_value.String });
+            } else if (json_value == .string) {
+                return std.meta.stringToEnum(T, json_value.string) orelse {
+                    if (comptime !suppress_error_logs) logger.debug("invalid enum tag for {s}, found '{s}'", .{ @typeName(T), json_value.string });
 
                     return error.InvalidEnumTag;
                 };
@@ -414,14 +414,14 @@ fn parseInternal(
             if (comptime isArrayList(T)) {
                 const Child = std.meta.Child(@field(T, "Slice"));
 
-                if (json_value == .Array) {
-                    if (T == std.json.Array) return json_value.Array;
+                if (json_value == .array) {
+                    if (T == std.json.Array) return json_value.array;
 
                     const allocator = maybe_allocator orelse return error.AllocatorRequired;
 
-                    var array_list = try T.initCapacity(allocator, json_value.Array.capacity);
+                    var array_list = try T.initCapacity(allocator, json_value.array.capacity);
 
-                    for (json_value.Array.items) |item| {
+                    for (json_value.array.items) |item| {
                         if (comptime isManaged(T))
                             try array_list.append(try parseInternal(
                                 Child,
@@ -453,13 +453,13 @@ fn parseInternal(
 
                 if (Key != []const u8) @compileError("HashMap key must be of type []const u8!");
 
-                if (json_value == .Object) {
-                    if (T == std.json.ObjectMap) return json_value.Object;
+                if (json_value == .object) {
+                    if (T == std.json.ObjectMap) return json_value.object;
 
                     const allocator = maybe_allocator orelse return error.AllocatorRequired;
 
                     var map: T = if (managed) T.init(allocator) else .{};
-                    var map_iterator = json_value.Object.iterator();
+                    var map_iterator = json_value.object.iterator();
 
                     while (map_iterator.next()) |entry| {
                         if (managed)
@@ -486,12 +486,12 @@ fn parseInternal(
             }
 
             if (info.is_tuple) {
-                if (json_value != .Array) {
+                if (json_value != .array) {
                     if (comptime !suppress_error_logs) logger.debug("expected Array, found {s}", .{@tagName(json_value)});
                     return error.UnexpectedFieldType;
                 }
 
-                if (json_value.Array.items.len != std.meta.fields(T).len) {
+                if (json_value.array.items.len != std.meta.fields(T).len) {
                     if (comptime !suppress_error_logs) logger.debug("expected Array to match length of Tuple {s} but it doesn't", .{@typeName(T)});
                     return error.UnexpectedFieldType;
                 }
@@ -502,7 +502,7 @@ fn parseInternal(
                 inline while (index < std.meta.fields(T).len) : (index += 1) {
                     tuple[index] = try parseInternal(
                         std.meta.fields(T)[index].type,
-                        json_value.Array.items[index],
+                        json_value.array.items[index],
                         maybe_allocator,
                         suppress_error_logs,
                     );
@@ -511,16 +511,16 @@ fn parseInternal(
                 return tuple;
             }
 
-            if (json_value == .Object) {
+            if (json_value == .object) {
                 var result: T = undefined;
 
                 // Must use in order to bypass [#2727](https://github.com/ziglang/zig/issues/2727) :(
                 var missing_field = false;
 
                 inline for (info.fields) |field| {
-                    const nm = nullMeaning(T, field) orelse .value;
+                    const nm = comptime nullMeaning(T, field) orelse .value;
 
-                    const field_value = json_value.Object.get(mightRemap(T, field.name));
+                    const field_value = json_value.object.get(mightRemap(T, field.name));
 
                     if (field.is_comptime) {
                         if (field_value == null) {
@@ -546,9 +546,7 @@ fn parseInternal(
                                 return error.InvalidFieldValue;
                             }
                         } else unreachable; // zig requires comptime fields to have a default initialization value
-                    } else if (dualable(field.type) and nm == .dual) {
-                        if (comptime !dualable(field.type)) unreachable;
-
+                    } else if (comptime dualable(field.type) and nm == .dual) {
                         if (field_value == null) {
                             @field(result, field.name) = null;
                         } else {
@@ -605,15 +603,15 @@ fn parseInternal(
         .Pointer => |info| {
             if (info.size == .Slice) {
                 if (info.child == u8) {
-                    if (json_value == .String) {
-                        return json_value.String;
+                    if (json_value == .string) {
+                        return json_value.string;
                     } else {
                         if (comptime !suppress_error_logs) logger.debug("expected String, found {s}", .{@tagName(json_value)});
 
                         return error.UnexpectedFieldType;
                     }
                 } else if (info.child == std.json.Value) {
-                    return json_value.Array.items;
+                    return json_value.array.items;
                 }
             }
 
@@ -622,30 +620,30 @@ fn parseInternal(
                 .Slice, .Many => {
                     const sentinel = if (info.sentinel) |ptr| @ptrCast(*const info.child, ptr).* else null;
 
-                    if (info.child == u8 and json_value == .String) {
+                    if (info.child == u8 and json_value == .string) {
                         const array = try allocator.allocWithOptions(
                             info.child,
-                            json_value.String.len,
+                            json_value.string.len,
                             info.alignment,
                             sentinel,
                         );
 
-                        std.mem.copy(u8, array, json_value.String);
+                        std.mem.copy(u8, array, json_value.string);
 
                         return @ptrCast(T, array);
                     }
 
-                    if (json_value == .Array) {
-                        if (info.child == std.json.Value) return json_value.Array.items;
+                    if (json_value == .array) {
+                        if (info.child == std.json.Value) return json_value.array.items;
 
                         const array = try allocator.allocWithOptions(
                             info.child,
-                            json_value.Array.items.len,
+                            json_value.array.items.len,
                             info.alignment,
                             sentinel,
                         );
 
-                        for (json_value.Array.items, 0..) |item, index|
+                        for (json_value.array.items, 0..) |item, index|
                             array[index] = try parseInternal(
                                 info.child,
                                 item,
@@ -675,7 +673,7 @@ fn parseInternal(
             }
         },
         .Array => |info| {
-            if (json_value == .Array) {
+            if (json_value == .array) {
                 var array: T = undefined;
 
                 if (info.sentinel) |ptr| {
@@ -684,7 +682,7 @@ fn parseInternal(
                     array[array.len] = sentinel;
                 }
 
-                if (json_value.Array.items.len != info.len) {
+                if (json_value.array.items.len != info.len) {
                     if (comptime !suppress_error_logs) logger.debug("expected Array to match length of {s} but it doesn't", .{@typeName(T)});
                     return error.UnexpectedFieldType;
                 }
@@ -692,7 +690,7 @@ fn parseInternal(
                 for (array, 0..) |_, index|
                     array[index] = try parseInternal(
                         info.child,
-                        json_value.Array.items[index],
+                        json_value.array.items[index],
                         maybe_allocator,
                         suppress_error_logs,
                     );
@@ -705,10 +703,10 @@ fn parseInternal(
             }
         },
         .Vector => |info| {
-            if (json_value == .Array) {
+            if (json_value == .array) {
                 var vector: T = undefined;
 
-                if (json_value.Array.items.len != info.len) {
+                if (json_value.array.items.len != info.len) {
                     if (comptime !suppress_error_logs) logger.debug("expected Array to match length of {s} ({d}) but it doesn't", .{ @typeName(T), info.len });
                     return error.UnexpectedFieldType;
                 }
@@ -866,9 +864,7 @@ pub fn stringify(
             try out_stream.writeByte('{');
             var field_output = false;
             var child_options = options;
-            if (child_options.whitespace) |*child_whitespace| {
-                child_whitespace.indent_level += 1;
-            }
+            child_options.whitespace.indent_level += 1;
 
             if (comptime isHashMap(T)) {
                 var iterator = value.iterator();
@@ -879,16 +875,13 @@ pub fn stringify(
                     } else {
                         try out_stream.writeByte(',');
                     }
-                    if (child_options.whitespace) |child_whitespace| {
-                        try child_whitespace.outputIndent(out_stream);
-                    }
+                    try child_options.whitespace.outputIndent(out_stream);
                     try outputJsonString(entry.key_ptr.*, options, out_stream);
                     try out_stream.writeByte(':');
-                    if (child_options.whitespace) |child_whitespace| {
-                        if (child_whitespace.separator) {
-                            try out_stream.writeByte(' ');
-                        }
+                    if (child_options.whitespace.separator) {
+                        try out_stream.writeByte(' ');
                     }
+
                     try stringify(entry.value_ptr.*, child_options, out_stream);
                 }
             } else {
@@ -921,21 +914,17 @@ pub fn stringify(
                         } else {
                             try out_stream.writeByte(',');
                         }
-                        if (child_options.whitespace) |child_whitespace| {
-                            try child_whitespace.outputIndent(out_stream);
-                        }
+                        try child_options.whitespace.outputIndent(out_stream);
                         try outputJsonString(mightRemap(T, Field.name), options, out_stream);
                         try out_stream.writeByte(':');
-                        if (child_options.whitespace) |child_whitespace| {
-                            if (child_whitespace.separator) {
-                                try out_stream.writeByte(' ');
-                            }
+                        if (child_options.whitespace.separator) {
+                            try out_stream.writeByte(' ');
                         }
 
                         if (is_undefinedable) {
                             try stringify(@field(value, Field.name).value, child_options, out_stream);
-                        } else if (dualable(Field.type) and nm == .dual)
-                            if (comptime dualable(Field.type)) try stringify(@field(value, Field.name).?, child_options, out_stream) else unreachable
+                        } else if ((comptime dualable(Field.type)) and nm == .dual)
+                            try stringify(@field(value, Field.name).?, child_options, out_stream)
                         else {
                             try stringify(@field(value, Field.name), child_options, out_stream);
                         }
@@ -944,9 +933,7 @@ pub fn stringify(
             }
 
             if (field_output) {
-                if (options.whitespace) |whitespace| {
-                    try whitespace.outputIndent(out_stream);
-                }
+                try options.whitespace.outputIndent(out_stream);
             }
             try out_stream.writeByte('}');
             return;
@@ -972,22 +959,17 @@ pub fn stringify(
 
                 try out_stream.writeByte('[');
                 var child_options = options;
-                if (child_options.whitespace) |*whitespace| {
-                    whitespace.indent_level += 1;
-                }
+                child_options.whitespace.indent_level += 1;
+
                 for (value, 0..) |x, i| {
                     if (i != 0) {
                         try out_stream.writeByte(',');
                     }
-                    if (child_options.whitespace) |child_whitespace| {
-                        try child_whitespace.outputIndent(out_stream);
-                    }
+                    try child_options.whitespace.outputIndent(out_stream);
                     try stringify(x, child_options, out_stream);
                 }
                 if (value.len != 0) {
-                    if (options.whitespace) |whitespace| {
-                        try whitespace.outputIndent(out_stream);
-                    }
+                    try options.whitespace.outputIndent(out_stream);
                 }
                 try out_stream.writeByte(']');
                 return;
@@ -1027,29 +1009,29 @@ pub fn toValue(
     switch (@typeInfo(T)) {
         .Bool => {
             return .{
-                .Bool = value,
+                .bool = value,
             };
         },
         .Float => {
             return .{
-                .Float = value,
+                .float = value,
             };
         },
         .Int => |i| {
             return if (i.bits > 64) .{
-                .NumberString = std.fmt.allocPrint(allocator, "{d}", .{value}),
+                .number_string = std.fmt.allocPrint(allocator, "{d}", .{value}),
             } else .{
-                .Integer = value,
+                .integer = value,
             };
         },
         .Optional => {
             return if (value) |val|
                 toValue(allocator, val, options)
             else
-                .Null;
+                .null;
         },
         .Enum => {
-            return if (@hasDecl(T, "tres_string_enum")) .{ .String = @tagName(value) } else toValue(allocator, @enumToInt(value), options);
+            return if (@hasDecl(T, "tres_string_enum")) .{ .string = @tagName(value) } else toValue(allocator, @enumToInt(value), options);
         },
         .Union => |info| {
             if (info.tag_type != null) {
@@ -1069,14 +1051,14 @@ pub fn toValue(
                 const Child = std.meta.Child(@field(T, "Slice"));
 
                 if (Child == u8) {
-                    return .{ .String = if (options.copy_strings)
+                    return .{ .string = if (options.copy_strings)
                         try allocator.dupe(u8, value.items)
                     else
                         value.items };
                 } else {
                     var arr = std.json.Array.initCapacity(allocator, value.items);
                     for (value.items) |item| try arr.append(try toValue(allocator, item, options));
-                    return .{ .Array = arr };
+                    return .{ .array = arr };
                 }
             }
 
@@ -1094,13 +1076,13 @@ pub fn toValue(
                     else
                         entry.key_ptr.*, try toValue(allocator, entry.value_ptr.*, options));
                 }
-                return .{ .Object = obj };
+                return .{ .object = obj };
             }
 
             if (info.is_tuple) {
                 var arr = std.json.Array.initCapacity(allocator, info.fields.len);
                 inline for (value) |item| try arr.append(try toValue(allocator, item, options));
-                return .{ .Array = arr };
+                return .{ .array = arr };
             }
 
             var obj = std.json.ObjectMap.init(allocator);
@@ -1120,7 +1102,7 @@ pub fn toValue(
                     if (field_val) |val| {
                         if (val) |val2| {
                             try obj.put(field_name, try toValue(allocator, val2, options));
-                        } else try obj.put(field_name, .Null);
+                        } else try obj.put(field_name, .null);
                     }
                 } else if (@typeInfo(field.type) == .Optional and nm == .field) {
                     if (field_val) |val| {
@@ -1135,20 +1117,20 @@ pub fn toValue(
                 }
             }
 
-            return .{ .Object = obj };
+            return .{ .object = obj };
         },
         // .Pointer => |info| {
         //     if (info.size == .Slice) {
         //         if (info.child == u8) {
-        //             if (json_value == .String) {
-        //                 return json_value.String;
+        //             if (json_value == .string) {
+        //                 return json_value.string;
         //             } else {
         //                 if (comptime !suppress_error_logs) logger.debug("expected String, found {s}", .{@tagName(json_value)});
 
         //                 return error.UnexpectedFieldType;
         //             }
         //         } else if (info.child == std.json.Value) {
-        //             return json_value.Array.items;
+        //             return json_value.array.items;
         //         }
         //     }
 
@@ -1157,7 +1139,7 @@ pub fn toValue(
         //         .Slice, .Many => {
         //             const sentinel = if (info.sentinel) |ptr| @ptrCast(*const info.child, ptr).* else null;
 
-        //             if (info.child == u8 and json_value == .String) {
+        //             if (info.child == u8 and json_value == .string) {
         //                 const array = try allocator.allocWithOptions(
         //                     info.child,
         //                     json_value.String.len,
@@ -1165,22 +1147,22 @@ pub fn toValue(
         //                     sentinel,
         //                 );
 
-        //                 std.mem.copy(u8, array, json_value.String);
+        //                 std.mem.copy(u8, array, json_value.string);
 
         //                 return @ptrCast(T, array);
         //             }
 
-        //             if (json_value == .Array) {
-        //                 if (info.child == std.json.Value) return json_value.Array.items;
+        //             if (json_value == .array) {
+        //                 if (info.child == std.json.Value) return json_value.array.items;
 
         //                 const array = try allocator.allocWithOptions(
         //                     info.child,
-        //                     json_value.Array.items.len,
+        //                     json_value.array.items.len,
         //                     info.alignment,
         //                     sentinel,
         //                 );
 
-        //                 for (json_value.Array.items) |item, index|
+        //                 for (json_value.array.items) |item, index|
         //                     array[index] = try parseInternal(
         //                         info.child,
         //                         item,
@@ -1234,7 +1216,7 @@ pub fn toValue(
 
             return arr;
         },
-        .Void => return .{ .Object = std.json.ObjectMap.init(allocator) },
+        .Void => return .{ .object = std.json.ObjectMap.init(allocator) },
         else => {
             @compileError("unhandled json type: " ++ @typeName(T));
         },
@@ -1338,7 +1320,7 @@ test "json.parse simple struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
     const tree = try testing_parser.parse(json);
 
     const parsed = try parse(FullStruct, tree.root, arena.allocator());
@@ -1352,20 +1334,20 @@ test "json.parse simple struct" {
     try std.testing.expectEqual(FullStruct.Role.crewmate, parsed.an_enum_string);
     try std.testing.expectEqualSlices(i64, &[_]i64{ 1, 2, 3, 4, 5, 6 }, parsed.slice);
 
-    try std.testing.expect(parsed.substruct.value == .String);
-    try std.testing.expectEqualStrings("hello", parsed.substruct.value.String);
+    try std.testing.expect(parsed.substruct.value == .string);
+    try std.testing.expectEqualStrings("hello", parsed.substruct.value.string);
     try std.testing.expect(parsed.substruct.slice_of_values.len == 2);
-    try std.testing.expect(parsed.substruct.slice_of_values[0] == .String);
-    try std.testing.expectEqualStrings("hello", parsed.substruct.slice_of_values[0].String);
-    try std.testing.expect(parsed.substruct.slice_of_values[1] == .String);
-    try std.testing.expectEqualStrings("world", parsed.substruct.slice_of_values[1].String);
+    try std.testing.expect(parsed.substruct.slice_of_values[0] == .string);
+    try std.testing.expectEqualStrings("hello", parsed.substruct.slice_of_values[0].string);
+    try std.testing.expect(parsed.substruct.slice_of_values[1] == .string);
+    try std.testing.expectEqualStrings("world", parsed.substruct.slice_of_values[1].string);
     try std.testing.expect(parsed.substruct.union_a == .a);
     try std.testing.expectEqual(@as(i64, -42), parsed.substruct.union_a.a);
     try std.testing.expect(parsed.substruct.union_b == .b);
     try std.testing.expectEqualStrings("hello", parsed.substruct.union_b.b);
 
-    try std.testing.expectEqual(@as(i64, 123), parsed.random_map.get("a").?.Integer);
-    try std.testing.expectEqualStrings("Amogus!!", parsed.random_map.get("b").?.String);
+    try std.testing.expectEqual(@as(i64, 123), parsed.random_map.get("a").?.integer);
+    try std.testing.expectEqualStrings("Amogus!!", parsed.random_map.get("b").?.string);
 
     try std.testing.expectEqual(@as(i64, 123), parsed.number_map.get("a").?);
     try std.testing.expectEqual(@as(i64, 456), parsed.number_map.get("b").?);
@@ -1386,19 +1368,19 @@ test "json.parse simple struct" {
 
     try std.testing.expectEqual([2]u8{ 1, 255 }, parsed.my_array);
 
-    try std.testing.expect(parsed.my_array_of_any[0] == .String);
-    try std.testing.expectEqualStrings("a", parsed.my_array_of_any[0].String);
-    try std.testing.expect(parsed.my_array_of_any[1] == .Integer);
-    try std.testing.expectEqual(@as(i64, 2), parsed.my_array_of_any[1].Integer);
+    try std.testing.expect(parsed.my_array_of_any[0] == .string);
+    try std.testing.expectEqualStrings("a", parsed.my_array_of_any[0].string);
+    try std.testing.expect(parsed.my_array_of_any[1] == .integer);
+    try std.testing.expectEqual(@as(i64, 2), parsed.my_array_of_any[1].integer);
 
     try std.testing.expectEqual(@as(usize, 2), parsed.my_array_list.items.len);
     try std.testing.expectEqualSlices(i64, &[_]i64{ 2, 254 }, parsed.my_array_list.items);
 
     try std.testing.expectEqual(@as(usize, 2), parsed.my_array_list_of_any.items.len);
-    try std.testing.expect(parsed.my_array_list_of_any.items[0] == .String);
-    try std.testing.expectEqualStrings("b", parsed.my_array_list_of_any.items[0].String);
-    try std.testing.expect(parsed.my_array_list_of_any.items[1] == .Integer);
-    try std.testing.expectEqual(@as(i64, 3), parsed.my_array_list_of_any.items[1].Integer);
+    try std.testing.expect(parsed.my_array_list_of_any.items[0] == .string);
+    try std.testing.expectEqualStrings("b", parsed.my_array_list_of_any.items[0].string);
+    try std.testing.expect(parsed.my_array_list_of_any.items[1] == .integer);
+    try std.testing.expectEqual(@as(i64, 3), parsed.my_array_list_of_any.items[1].integer);
 
     try std.testing.expectEqual(@as(u8, 5), parsed.a_pointer.*);
 
@@ -1417,7 +1399,7 @@ test "json.parse missing field" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
     const tree = try testing_parser.parse(json);
 
     const parsed = parse(Struct, tree.root, arena.allocator());
@@ -1441,7 +1423,7 @@ test "json.parse undefinedable fields and default values" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
     const tree = try testing_parser.parse(json);
 
     const parsed = try parse(Struct, tree.root, arena.allocator());
@@ -1484,7 +1466,7 @@ test "json.parse comptime fields" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
 
     const first_tree = try testing_parser.parse(first_message);
     const first_parsed = try parse(Message, first_tree.root, arena.allocator());
@@ -1539,12 +1521,12 @@ test "json.parse custom check functions for unions" {
 
         pub fn tresParse(value: std.json.Value, allocator: ?std.mem.Allocator) RequestOrNotificationParseError()!Self {
             // var allocator = options.allocator orelse return error.AllocatorRequired;
-            var object = value.Object;
+            var object = value.object;
             var request_or_notif: Self = undefined;
 
-            request_or_notif.jsonrpc = object.get("jsonrpc").?.String;
+            request_or_notif.jsonrpc = object.get("jsonrpc").?.string;
             request_or_notif.id = if (object.get("id")) |id| try parse(RequestId, id, allocator) else null;
-            request_or_notif.method = object.get("method").?.String;
+            request_or_notif.method = object.get("method").?.string;
 
             inline for (std.meta.fields(RequestParams)) |field| {
                 if (std.mem.eql(u8, request_or_notif.method, field.type.method)) {
@@ -1568,7 +1550,7 @@ test "json.parse custom check functions for unions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
     const first_tree = try testing_parser.parse(first_message);
     const first_parsed = try parse(RequestOrNotification, first_tree.root, arena.allocator());
 
@@ -1587,7 +1569,7 @@ test "json.parse allocator required errors" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
 
     try std.testing.expectError(error.AllocatorRequired, parse([]i64, (try testing_parser.parse("[1, 2, 3, 4]")).root, null));
     testing_parser.reset();
@@ -1754,7 +1736,7 @@ test "parse and stringify null meaning" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
 
     var stringify_buf: [128]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&stringify_buf);
@@ -1825,28 +1807,28 @@ test "json.toValue: basics" {
     defer arena.deinit();
 
     const bool_simple = try toValue(arena.allocator(), @as(bool, false), .{});
-    try std.testing.expect(bool_simple == .Bool);
-    try std.testing.expectEqual(false, bool_simple.Bool);
+    try std.testing.expect(bool_simple == .bool);
+    try std.testing.expectEqual(false, bool_simple.bool);
 
     const float_simple = try toValue(arena.allocator(), @as(f64, 7.89), .{});
-    try std.testing.expect(float_simple == .Float);
-    try std.testing.expectEqual(@as(f64, 7.89), float_simple.Float);
+    try std.testing.expect(float_simple == .float);
+    try std.testing.expectEqual(@as(f64, 7.89), float_simple.float);
 
     const int_simple = try toValue(arena.allocator(), @as(i64, 10), .{});
-    try std.testing.expect(int_simple == .Integer);
-    try std.testing.expectEqual(@as(i64, 10), int_simple.Integer);
+    try std.testing.expect(int_simple == .integer);
+    try std.testing.expectEqual(@as(i64, 10), int_simple.integer);
 
     const optional_simple_1 = try toValue(arena.allocator(), @as(?f64, 7.89), .{});
-    try std.testing.expect(optional_simple_1 == .Float);
-    try std.testing.expectEqual(@as(f64, 7.89), optional_simple_1.Float);
+    try std.testing.expect(optional_simple_1 == .float);
+    try std.testing.expectEqual(@as(f64, 7.89), optional_simple_1.float);
 
     const optional_simple_2 = try toValue(arena.allocator(), @as(?f64, null), .{});
-    try std.testing.expect(optional_simple_2 == .Null);
+    try std.testing.expect(optional_simple_2 == .null);
 
     const SimpleEnum1 = enum(u32) { a = 0, b = 69, c = 420, d = 42069 };
     const simple_enum_1 = try toValue(arena.allocator(), SimpleEnum1.b, .{});
-    try std.testing.expect(simple_enum_1 == .Integer);
-    try std.testing.expectEqual(@as(i64, 69), simple_enum_1.Integer);
+    try std.testing.expect(simple_enum_1 == .integer);
+    try std.testing.expectEqual(@as(i64, 69), simple_enum_1.integer);
 
     const SimpleEnum2 = enum(u32) {
         pub const tres_string_enum = .{};
@@ -1858,8 +1840,8 @@ test "json.toValue: basics" {
     };
 
     const simple_enum_2 = try toValue(arena.allocator(), SimpleEnum2.b, .{});
-    try std.testing.expect(simple_enum_2 == .String);
-    try std.testing.expectEqualStrings("b", simple_enum_2.String);
+    try std.testing.expect(simple_enum_2 == .string);
+    try std.testing.expectEqualStrings("b", simple_enum_2.string);
 
     const SimpleUnion = union(enum) {
         a: i64,
@@ -1867,12 +1849,12 @@ test "json.toValue: basics" {
     };
 
     const simple_union_1 = try toValue(arena.allocator(), SimpleUnion{ .a = 25 }, .{});
-    try std.testing.expect(simple_union_1 == .Integer);
-    try std.testing.expectEqual(@as(i64, 25), simple_union_1.Integer);
+    try std.testing.expect(simple_union_1 == .integer);
+    try std.testing.expectEqual(@as(i64, 25), simple_union_1.integer);
 
     const simple_union_2 = try toValue(arena.allocator(), SimpleUnion{ .b = true }, .{});
-    try std.testing.expect(simple_union_2 == .Bool);
-    try std.testing.expectEqual(true, simple_union_2.Bool);
+    try std.testing.expect(simple_union_2 == .bool);
+    try std.testing.expectEqual(true, simple_union_2.bool);
 
     const SimpleStruct = struct {
         abc: u8,
@@ -1881,10 +1863,10 @@ test "json.toValue: basics" {
     };
 
     const simple_struct = try toValue(arena.allocator(), SimpleStruct{ .abc = 25, .def = .c, .ghi = .d }, .{});
-    try std.testing.expect(simple_struct == .Object);
-    try std.testing.expectEqual(@as(i64, 25), simple_struct.Object.get("abc").?.Integer);
-    try std.testing.expectEqual(@as(i64, 420), simple_struct.Object.get("def").?.Integer);
-    try std.testing.expectEqualStrings("d", simple_struct.Object.get("ghi").?.String);
+    try std.testing.expect(simple_struct == .object);
+    try std.testing.expectEqual(@as(i64, 25), simple_struct.object.get("abc").?.integer);
+    try std.testing.expectEqual(@as(i64, 420), simple_struct.object.get("def").?.integer);
+    try std.testing.expectEqualStrings("d", simple_struct.object.get("ghi").?.string);
 }
 
 test "remapping" {
@@ -1907,7 +1889,7 @@ test "remapping" {
         \\{"jsonCamelCase":69,"json_doesn't_care":420}
     ;
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), false);
+    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
     const tree = try testing_parser.parse(json);
 
     const bruh_1 = try parse(Bruh, tree.root, null);
@@ -1922,6 +1904,6 @@ test "remapping" {
     try std.testing.expectEqualStrings(json, fbs.getWritten());
 
     const value = try toValue(arena.allocator(), bruh_1, .{});
-    try std.testing.expectEqual(@as(i64, 69), value.Object.get("jsonCamelCase").?.Integer);
-    try std.testing.expectEqual(@as(i64, 420), value.Object.get("json_doesn't_care").?.Integer);
+    try std.testing.expectEqual(@as(i64, 69), value.object.get("jsonCamelCase").?.integer);
+    try std.testing.expectEqual(@as(i64, 420), value.object.get("json_doesn't_care").?.integer);
 }
