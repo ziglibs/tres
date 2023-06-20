@@ -340,7 +340,7 @@ fn parseInternal(
             if (json_value == .float) {
                 return @floatCast(T, json_value.float);
             } else if (json_value == .integer) {
-                return @intToFloat(T, json_value.integer);
+                return @floatFromInt(T, json_value.integer);
             } else {
                 if (comptime !suppress_error_logs) logger.debug("expected Float, found {s}", .{@tagName(json_value)});
 
@@ -832,7 +832,7 @@ pub fn stringify(
             if (@hasDecl(T, "tres_string_enum")) {
                 return try stringify(@tagName(value), options, out_stream);
             } else {
-                return try stringify(@enumToInt(value), options, out_stream);
+                return try stringify(@intFromEnum(value), options, out_stream);
             }
         },
         .Union => {
@@ -1031,7 +1031,7 @@ pub fn toValue(
                 .null;
         },
         .Enum => {
-            return if (@hasDecl(T, "tres_string_enum")) .{ .string = @tagName(value) } else toValue(allocator, @enumToInt(value), options);
+            return if (@hasDecl(T, "tres_string_enum")) .{ .string = @tagName(value) } else toValue(allocator, @intFromEnum(value), options);
         },
         .Union => |info| {
             if (info.tag_type != null) {
