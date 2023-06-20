@@ -1320,15 +1320,14 @@ test "json.parse simple struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
-    const tree = try testing_parser.parse(json);
+    const root = try std.json.parseFromSlice(std.json.Value, arena.allocator(), json, .{});
 
-    const parsed = try parse(FullStruct, tree.root, arena.allocator());
+    const parsed = try parse(FullStruct, root.value, arena.allocator());
 
     try std.testing.expectEqual(true, parsed.bool_true);
     try std.testing.expectEqual(false, parsed.bool_false);
     try std.testing.expectEqual(@as(u8, 100), parsed.integer);
-    try std.testing.expectApproxEqRel(@as(f64, 4.2069), parsed.float, std.math.epsilon(f64));
+    try std.testing.expectApproxEqRel(@as(f64, 4.2069), parsed.float, std.math.floatEps(f64));
     try std.testing.expectEqual(@as(?f32, null), parsed.optional);
     try std.testing.expectEqual(FullStruct.Role.impostor, parsed.an_enum);
     try std.testing.expectEqual(FullStruct.Role.crewmate, parsed.an_enum_string);
@@ -1399,10 +1398,9 @@ test "json.parse missing field" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
-    const tree = try testing_parser.parse(json);
+    const tree = try std.json.parseFromSlice(std.json.Value, arena.allocator(), json, .{});
 
-    const parsed = parse(Struct, tree.root, arena.allocator());
+    const parsed = parse(Struct, tree.value, arena.allocator());
 
     try std.testing.expectError(error.MissingRequiredField, parsed);
 }
@@ -1423,10 +1421,9 @@ test "json.parse undefinedable fields and default values" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
-    const tree = try testing_parser.parse(json);
+    const tree = try std.json.parseFromSlice(std.json.Value, arena.allocator(), json, .{});
 
-    const parsed = try parse(Struct, tree.root, arena.allocator());
+    const parsed = try parse(Struct, tree.value, arena.allocator());
 
     try std.testing.expectEqual(@as(i64, 42069), parsed.meh.value);
     try std.testing.expectEqual(true, parsed.meh2.missing);
@@ -1466,17 +1463,13 @@ test "json.parse comptime fields" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
-
-    const first_tree = try testing_parser.parse(first_message);
-    const first_parsed = try parse(Message, first_tree.root, arena.allocator());
+    const first_tree = try std.json.parseFromSlice(std.json.Value, arena.allocator(), first_message, .{});
+    const first_parsed = try parse(Message, first_tree.value, arena.allocator());
 
     try std.testing.expect(first_parsed == .youre_the_impostor);
 
-    testing_parser.reset();
-
-    const second_tree = try testing_parser.parse(second_message);
-    const second_parsed = try parse(Message, second_tree.root, arena.allocator());
+    const second_tree = try std.json.parseFromSlice(std.json.Value, arena.allocator(), second_message, .{});
+    const second_parsed = try parse(Message, second_tree.value, arena.allocator());
 
     try std.testing.expect(second_parsed == .youre_cute_uwu);
 }
@@ -1550,9 +1543,8 @@ test "json.parse custom check functions for unions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
-    const first_tree = try testing_parser.parse(first_message);
-    const first_parsed = try parse(RequestOrNotification, first_tree.root, arena.allocator());
+    const first_tree = try std.json.parseFromSlice(std.json.Value, arena.allocator(), first_message, .{});
+    const first_parsed = try parse(RequestOrNotification, first_tree.value, arena.allocator());
 
     try std.testing.expectEqualStrings("2.0", first_parsed.jsonrpc);
     try std.testing.expect(first_parsed.id != null);
@@ -1569,13 +1561,10 @@ test "json.parse allocator required errors" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
-
-    try std.testing.expectError(error.AllocatorRequired, parse([]i64, (try testing_parser.parse("[1, 2, 3, 4]")).root, null));
-    testing_parser.reset();
-    try std.testing.expectError(error.AllocatorRequired, parse(std.StringArrayHashMap(i64), (try testing_parser.parse(
+    try std.testing.expectError(error.AllocatorRequired, parse([]i64, (try std.json.parseFromSlice(std.json.Value, arena.allocator(), "[1, 2, 3, 4]", .{})).value, null));
+    try std.testing.expectError(error.AllocatorRequired, parse(std.StringArrayHashMap(i64), (try std.json.parseFromSlice(std.json.Value, arena.allocator(),
         \\{"a": 123, "b": -69}
-    )).root, null));
+    , .{})).value, null));
 }
 
 test "json.stringify basics" {
@@ -1683,9 +1672,29 @@ test "json.stringify hashmaps" {
 
     try stringify(db, .{}, fbs.writer());
 
-    try std.testing.expectEqualStrings(
+    //HashMap entry iteration order is unpredictable, so just handle every case.
+    //From the docs: "No order is guaranteed"
+    //So we gotta do this to be completely reliable
+    //Note: this test *was* broken at the time or writing
+
+    const str = fbs.getWritten();
+
+    if (std.mem.indexOfDiff(u8,
         \\{"coolness":{"Montreal":-2.0e+01,"Beirut":2.0e+01},"height":{"Me":100000,"Hudson":0}}
-    , fbs.getWritten());
+    , str) != null and
+        std.mem.indexOfDiff(u8,
+        \\{"coolness":{"Beirut":2.0e+01,"Montreal":-2.0e+01},"height":{"Me":100000,"Hudson":0}}
+    , str) != null and
+        std.mem.indexOfDiff(u8,
+        \\{"coolness":{"Montreal":-2.0e+01,"Beirut":2.0e+01},"height":{"Hudson":0,"Me":100000}}
+    , str) != null and
+        std.mem.indexOfDiff(u8,
+        \\{"coolness":{"Beirut":2.0e+01,"Montreal":-2.0e+01},"height":{"Hudson":0,"Me":100000}}
+    , str) != null) {
+        try std.testing.expectEqualStrings(
+            \\{"coolness":{"Montreal":-2.0e+01,"Beirut":2.0e+01},"height":{"Me":100000,"Hudson":0}}
+        , str);
+    }
 }
 
 test "json.stringify enums" {
@@ -1736,8 +1745,6 @@ test "parse and stringify null meaning" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
-
     var stringify_buf: [128]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&stringify_buf);
 
@@ -1746,39 +1753,36 @@ test "parse and stringify null meaning" {
         \\{"b":null}
     , fbs.getWritten());
 
-    const a1 = try parse(A, (try testing_parser.parse(fbs.getWritten())).root, allocator);
+    const a1 = try parse(A, (try std.json.parseFromSlice(std.json.Value, arena.allocator(), fbs.getWritten(), .{})).value, allocator);
     try std.testing.expectEqual(@as(?u8, null), a1.a);
     try std.testing.expectEqual(@as(?u8, null), a1.b);
     try std.testing.expectEqual(@as(??u8, null), a1.c);
 
     fbs.reset();
-    testing_parser.reset();
 
     try stringify(A{ .a = 5, .b = 7, .c = @as(?u8, null) }, .{}, fbs.writer());
     try std.testing.expectEqualStrings(
         \\{"a":5,"b":7,"c":null}
     , fbs.getWritten());
 
-    const a2 = try parse(A, (try testing_parser.parse(fbs.getWritten())).root, allocator);
+    const a2 = try parse(A, (try std.json.parseFromSlice(std.json.Value, arena.allocator(), fbs.getWritten(), .{})).value, allocator);
     try std.testing.expectEqual(@as(u8, 5), a2.a.?);
     try std.testing.expectEqual(@as(u8, 7), a2.b.?);
     try std.testing.expectEqual(@as(?u8, null), a2.c.?);
 
     fbs.reset();
-    testing_parser.reset();
 
     try stringify(A{ .a = 5, .b = 7, .c = 10 }, .{}, fbs.writer());
     try std.testing.expectEqualStrings(
         \\{"a":5,"b":7,"c":10}
     , fbs.getWritten());
 
-    const a3 = try parse(A, (try testing_parser.parse(fbs.getWritten())).root, allocator);
+    const a3 = try parse(A, (try std.json.parseFromSlice(std.json.Value, arena.allocator(), fbs.getWritten(), .{})).value, allocator);
     try std.testing.expectEqual(@as(u8, 5), a3.a.?);
     try std.testing.expectEqual(@as(u8, 7), a3.b.?);
     try std.testing.expectEqual(@as(u8, 10), a3.c.?.?);
 
     fbs.reset();
-    testing_parser.reset();
 }
 
 test "custom standard stringify" {
@@ -1889,10 +1893,9 @@ test "remapping" {
         \\{"jsonCamelCase":69,"json_doesn't_care":420}
     ;
 
-    var testing_parser = std.json.Parser.init(arena.allocator(), .alloc_if_needed);
-    const tree = try testing_parser.parse(json);
+    const tree = try std.json.parseFromSlice(std.json.Value, arena.allocator(), json, .{});
 
-    const bruh_1 = try parse(Bruh, tree.root, null);
+    const bruh_1 = try parse(Bruh, tree.value, null);
     try std.testing.expectEqual(@as(u8, 69), bruh_1.zig_snake_case);
     try std.testing.expectEqual(@as(u16, 420), bruh_1.zigBadPractice);
 
