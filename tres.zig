@@ -338,9 +338,9 @@ fn parseInternal(
         },
         .Float => {
             if (json_value == .float) {
-                return @floatCast(T, json_value.float);
+                return @as(T, @floatCast(json_value.float));
             } else if (json_value == .integer) {
-                return @floatFromInt(T, json_value.integer);
+                return @as(T, @floatFromInt(json_value.integer));
             } else {
                 if (comptime !suppress_error_logs) logger.debug("expected Float, found {s}", .{@tagName(json_value)});
 
@@ -536,7 +536,7 @@ fn parseInternal(
                                 maybe_allocator,
                                 suppress_error_logs,
                             );
-                            const default_value = @ptrCast(*const field.type, @alignCast(@alignOf(field.type), default)).*;
+                            const default_value = @as(*const field.type, @ptrCast(@alignCast(default))).*;
 
                             // NOTE: This only works for strings!
                             // TODODODODODODO ASAP
@@ -578,7 +578,7 @@ fn parseInternal(
                                     .missing = true,
                                 };
                             } else if (field.default_value) |default| {
-                                const default_value = @ptrCast(*const field.type, @alignCast(@alignOf(field.type), default)).*;
+                                const default_value = @as(*const field.type, @ptrCast(@alignCast(default))).*;
                                 @field(result, field.name) = default_value;
                             } else if (@typeInfo(field.type) == .Optional and nm == .field) {
                                 @field(result, field.name) = null;
@@ -618,7 +618,7 @@ fn parseInternal(
             const allocator = maybe_allocator orelse return error.AllocatorRequired;
             switch (info.size) {
                 .Slice, .Many => {
-                    const sentinel = if (info.sentinel) |ptr| @ptrCast(*const info.child, ptr).* else null;
+                    const sentinel = if (info.sentinel) |ptr| @as(*const info.child, @ptrCast(ptr)).* else null;
 
                     if (info.child == u8 and json_value == .string) {
                         const array = try allocator.allocWithOptions(
@@ -630,7 +630,7 @@ fn parseInternal(
 
                         std.mem.copy(u8, array, json_value.string);
 
-                        return @ptrCast(T, array);
+                        return @as(T, @ptrCast(array));
                     }
 
                     if (json_value == .array) {
@@ -651,7 +651,7 @@ fn parseInternal(
                                 suppress_error_logs,
                             );
 
-                        return @ptrCast(T, array);
+                        return @as(T, @ptrCast(array));
                     } else {
                         if (comptime !suppress_error_logs) logger.debug("expected Array, found {s}", .{@tagName(json_value)});
 
@@ -677,7 +677,7 @@ fn parseInternal(
                 var array: T = undefined;
 
                 if (info.sentinel) |ptr| {
-                    const sentinel = @ptrCast(*const info.child, ptr).*;
+                    const sentinel = @as(*const info.child, @ptrCast(ptr)).*;
 
                     array[array.len] = sentinel;
                 }
@@ -747,8 +747,8 @@ fn outputUnicodeEscape(
         std.debug.assert(codepoint <= 0x10FFFF);
         // To escape an extended character that is not in the Basic Multilingual Plane,
         // the character is represented as a 12-character sequence, encoding the UTF-16 surrogate pair.
-        const high = @intCast(u16, (codepoint - 0x10000) >> 10) + 0xD800;
-        const low = @intCast(u16, codepoint & 0x3FF) + 0xDC00;
+        const high = @as(u16, @intCast((codepoint - 0x10000) >> 10)) + 0xD800;
+        const low = @as(u16, @intCast(codepoint & 0x3FF)) + 0xDC00;
         try out_stream.writeAll("\\u");
         try std.fmt.formatIntValue(high, "x", std.fmt.FormatOptions{ .width = 4, .fill = '0' }, out_stream);
         try out_stream.writeAll("\\u");
@@ -1095,7 +1095,7 @@ pub fn toValue(
 
                 if (field.is_comptime) {
                     if (field.default_value) |default| {
-                        const default_value = @ptrCast(*const field.type, @alignCast(@alignOf(field.type), default)).*;
+                        const default_value = @as(*const field.type, @ptrCast(@alignCast(default))).*;
                         try obj.put(field_name, try toValue(allocator, default_value, options));
                     } else unreachable; // zig requires comptime fields to have a default initialization value
                 } else if (comptime dualable(field.type) and nm == .dual) {
@@ -1197,7 +1197,7 @@ pub fn toValue(
             arr.items.len = l;
 
             if (info.sentinel) |ptr| {
-                const sentinel = @ptrCast(*const info.child, ptr).*;
+                const sentinel = @as(*const info.child, @ptrCast(ptr)).*;
 
                 arr.items[l - 1] = sentinel;
             }
