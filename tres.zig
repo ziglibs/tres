@@ -159,8 +159,15 @@ pub fn ParseInternalError(comptime T: type) type {
     return ParseInternalErrorImpl(T, &inferred_types);
 }
 
+fn isContainer(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .Struct, .Union, .Enum, .Opaque => true,
+        else => false,
+    };
+}
+
 fn ParseInternalErrorImpl(comptime T: type, comptime inferred_types: []const type) type {
-    if (comptime std.meta.trait.isContainer(T) and @hasDecl(T, "tresParse")) {
+    if (comptime isContainer(T) and @hasDecl(T, "tresParse")) {
         const tresParse_return = @typeInfo(@typeInfo(@TypeOf(T.tresParse)).Fn.return_type.?);
         if (tresParse_return == .ErrorUnion) {
             return tresParse_return.ErrorUnion.error_set;
@@ -322,7 +329,7 @@ fn parseInternal(
 ) ParseInternalError(T)!T {
     comptime validateCustomDecls(T);
     if (T == std.json.Value) return json_value;
-    if (comptime std.meta.trait.isContainer(T) and @hasDecl(T, "tresParse")) {
+    if (comptime isContainer(T) and @hasDecl(T, "tresParse")) {
         return T.tresParse(json_value, maybe_allocator);
     }
 
@@ -704,7 +711,7 @@ fn parseInternal(
         },
         .Vector => |info| {
             if (json_value == .array) {
-                var vector: T = undefined;
+                const vector: T = undefined;
 
                 if (json_value.array.items.len != info.len) {
                     if (comptime !suppress_error_logs) logger.debug("expected Array to match length of {s} ({d}) but it doesn't", .{ @typeName(T), info.len });
@@ -1002,7 +1009,7 @@ pub fn toValue(
     comptime validateCustomDecls(T);
 
     if (T == std.json.Value) return value;
-    if (comptime std.meta.trait.isContainer(T) and @hasDecl(T, "tresParse")) {
+    if (comptime isContainer(T) and @hasDecl(T, "tresParse")) {
         return T.tresToValue(allocator, value, options);
     }
 
@@ -1576,7 +1583,7 @@ test "json.stringify basics" {
         signed: i16,
     };
 
-    var basic = Basic{
+    const basic = Basic{
         .unsigned = 69,
         .signed = -69,
     };
@@ -1599,7 +1606,7 @@ test "json.stringify undefinedables" {
         joe: Undefinedable([]const u8),
     };
 
-    var rimu = Furry{
+    const rimu = Furry{
         .name = .{ .value = "Rimu", .missing = false },
         .age = .{ .value = undefined, .missing = true },
         .plays_amogus = false,
